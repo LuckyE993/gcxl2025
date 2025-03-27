@@ -3,10 +3,10 @@
 """
 import datetime
 
-def log_message(message):
+def log_message(message, level='info'):
     """简单日志函数"""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
+    print(f"[{timestamp}] [{level.upper()}] {message}")
 
 def read_data_file(filepath):
     """读取数据文件"""

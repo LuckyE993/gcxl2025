@@ -8,7 +8,9 @@ setup(
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
-        # 项目依赖列表
+        "opencv-python",
+        "numpy",
+        "ultralytics",
     ],
     author="Qixuan Sun",
     author_email="luckyeureka52@gmail.com",
