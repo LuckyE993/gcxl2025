@@ -1,0 +1,5 @@
+{
+    "model": {
+        "path": "models/yolov8-25-03-27.pt"
+    }
+}
