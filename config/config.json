@@ -1,5 +1,14 @@
 {
     "model": {
         "path": "models/yolov8-25-03-27.pt"
+    },
+    "communication": {
+        "com": "COM7",
+        "baudrate": 115200,
+        "timeout": 1
+    },
+    "vehicle": {
+        "max_speed": 3000,
+        "max_yaw_rate": 3000
     }
 }
