@@ -12,7 +12,7 @@ project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
 from src.core import detector
-from src.utils import camera
+from src.core import camera
 from src.utils import helpers
 
 def main():
@@ -30,8 +30,6 @@ def main():
     if not cam.open():
         print("摄像头打开失败，应用程序无法继续")
         return 1
-    
-    print("摄像头属性:", cam.get_properties())
     
     # 创建FPS计数器
     fps_counter = camera.FPSCounter(update_interval=10)
