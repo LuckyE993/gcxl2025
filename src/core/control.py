@@ -125,21 +125,332 @@ class VehicleControl:
             return False
 
 
+class ArmControl:
+    def __init__(self, config=None):
+        """Initialize arm control parameters"""
+        if config is None:
+            config = settings.get_config()
+
+        # Load arm parameters from config
+        self.max_height = config.get("arm", {}).get(
+            "max_height", 400)  # Default max height: 400 mm
+        self.rotate_max_height = config.get("arm", {}).get(
+            "rotate_max_height", 300)  # Default max height for rotation: 300 mm
+        self.backward_height_limit = config.get("arm", {}).get(
+            "backward_height_limit", 200)  # 朝后时的最大高度限制: 200 mm
+        self.comm = None
+        self.arm_height = 0  # Current arm height
+        self.arm_grab = 0
+        self.arm_plate_angle = 0
+        self.arm_rotate = 0
+        log_message(
+            f"Arm control initialized with max height: {self.max_height} mm")
+
+    def set_communication(self, comm):
+        """Set the communication interface"""
+        self.comm = comm
+
+    def initialize(self):
+        """
+        初始化机械臂到基准位置
+        - 高度设置为0
+        - 方向朝前
+        - 夹爪打开
+        - 旋转盘角度为0
+
+        Returns:
+            bool: 所有操作成功返回True，任一操作失败返回False
+        """
+        if not self.comm:
+            log_message("Communication interface not set", level="error")
+            return False
+
+        log_message("正在初始化机械臂到基准位置...")
+        success = True
+
+        # 先将机械臂高度设置为0（安全起见，先降低高度）
+        if not self.arm_height_control(0):
+            log_message("机械臂高度初始化失败", level="error")
+            success = False
+        sleep(1)
+        # 设置方向朝前
+        if not self.arm_rotate_control(0):
+            log_message("机械臂方向初始化失败", level="error")
+            success = False
+        sleep(0.5)
+        # 设置夹爪打开
+        if not self.arm_grab_control(0):
+            log_message("机械臂夹爪初始化失败", level="error")
+            success = False
+        sleep(0.5)
+        # 设置旋转盘角度为0
+        if not self.arm_plate_control(0):
+            log_message("机械臂旋转盘初始化失败", level="error")
+
+            success = False
+        sleep(0.5)
+        if success:
+            log_message("机械臂初始化完成，已设置到基准位置")
+        else:
+            log_message("机械臂部分初始化失败，请检查连接和设备状态", level="warning")
+
+        return success
+
+    def arm_height_control(self, height):
+        """
+        控制机械臂高度
+
+        Args:
+            height (int): 目标高度，单位mm，范围[0, max_height]
+
+        Returns:
+            bool: 成功返回True，失败返回False
+        """
+        if not self.comm:
+            log_message("Communication interface not set", level="error")
+            return False
+
+        # 根据方向应用高度限制
+        if self.arm_rotate == 1:  # 朝后
+            max_allowed_height = min(self.max_height, self.rotate_max_height)
+            if height > self.rotate_max_height:
+                log_message(f"朝后方向高度受限: 请求高度 {height}mm 超过后向限制 {self.rotate_max_height}mm", level="warning")
+        else:  # 朝前
+            max_allowed_height = self.max_height
+
+        # 限制高度范围
+        height_val = max(0, min(int(height), max_allowed_height))
+        
+        log_message(f"Arm height control: height={height_val}mm")
+
+        try:
+            # 命令类型: 0x02 0x01 (机械臂高度控制)
+            cmd_bytes = bytes([0x02, 0x01])
+
+            # 将高度值转换为2字节（高位在前）
+            height_bytes = height_val.to_bytes(
+                2, byteorder='big', signed=False)
+
+            # 剩余4个字节为0
+            zero_bytes = bytes([0x00, 0x00, 0x00, 0x00])
+
+            # 构建完整payload: 命令类型(2字节) + 高度值(2字节) + 0填充(4字节)
+            payload = cmd_bytes + height_bytes + zero_bytes
+
+            # 验证payload长度为8字节
+            if len(payload) != 8:
+                raise ValueError(
+                    f"Invalid payload length: {len(payload)}, should be 8 bytes")
+
+            # 保存当前高度值
+            self.arm_height = height_val
+
+            # 发送控制命令
+            return send_protocol_message(self.comm, payload)
+
+        except Exception as e:
+            log_message(f"Arm height control failed: {str(e)}", level="error")
+            return False
+
+    def arm_grab_control(self, state):
+        """
+        控制机械臂夹爪开合（舵机2）
+
+        Args:
+            state (int): 夹爪状态
+                0: 打开
+                1: 闭合
+                2: 开到最大
+
+        Returns:
+            bool: 成功返回True，失败返回False
+        """
+        if not self.comm:
+            log_message("Communication interface not set", level="error")
+            return False
+
+        # 验证状态值
+        if state not in [0, 1, 2]:
+            log_message(
+                f"无效的夹爪状态: {state}，必须是0(打开)、1(闭合)或2(最大开启)", level="error")
+            return False
+
+        log_message(
+            f"机械臂夹爪控制: state={state} ({'打开' if state == 0 else '闭合' if state == 1 else '最大开启'})")
+
+        # 保存当前夹爪状态
+        self.arm_grab = state
+
+        try:
+            # 命令类型: 0x02 0x00 (机械臂步进舵机控制)
+            cmd_bytes = bytes([0x02, 0x00])
+
+            # 步进电机1位置（假设为0，或使用已存储的值）
+            stepper1_bytes = bytes([0x00, 0x00])
+
+            # 步进电机2（旋转盘）位置
+            stepper2_bytes = self.arm_plate_angle.to_bytes(
+                2, byteorder='big', signed=False)
+
+            # 舵机1（机械臂旋转）和舵机2（夹爪开合）
+            servo1_byte = bytes([self.arm_rotate])
+            servo2_byte = bytes([state])
+
+            # 构建完整payload
+            payload = cmd_bytes + stepper1_bytes + \
+                stepper2_bytes + servo1_byte + servo2_byte
+
+            # 验证payload长度为8字节
+            if len(payload) != 8:
+                raise ValueError(
+                    f"Invalid payload length: {len(payload)}, should be 8 bytes")
+
+            # 发送控制命令
+            return send_protocol_message(self.comm, payload)
+
+        except Exception as e:
+            log_message(f"机械臂夹爪控制失败: {str(e)}", level="error")
+            return False
+
+    def arm_rotate_control(self, direction):
+        """
+        控制机械臂旋转方向（舵机1）
+
+        Args:
+            direction (int): 旋转方向
+                0: 朝前
+                1: 朝后
+
+        Returns:
+            bool: 成功返回True，失败返回False
+        """
+        if not self.comm:
+            log_message("Communication interface not set", level="error")
+            return False
+
+        # 验证方向值
+        if direction not in [0, 1]:
+            log_message(f"无效的旋转方向: {direction},必须是0(朝前)或1(朝后)", level="error")
+            return False
+        # Verify height value
+        if self.arm_height > self.rotate_max_height:
+            log_message(
+                f"机械臂高度过高: {self.arm_height}mm,最大高度为: {self.rotate_max_height},无法旋转", level="error")
+            return False
+
+        log_message(
+            f"机械臂旋转控制: direction={direction} ({'朝前' if direction == 0 else '朝后'})")
+
+        # 保存当前旋转方向
+        self.arm_rotate = direction
+
+        try:
+            # 命令类型: 0x02 0x00 (机械臂步进舵机控制)
+            cmd_bytes = bytes([0x02, 0x00])
+
+            # 步进电机1位置（假设为0，或使用已存储的值）
+            stepper1_bytes = bytes([0x00, 0x00])
+
+            # 步进电机2（旋转盘）位置
+            stepper2_bytes = self.arm_plate_angle.to_bytes(
+                2, byteorder='big', signed=False)
+
+            # 舵机1（机械臂旋转）和舵机2（夹爪开合）
+            servo1_byte = bytes([direction])
+            servo2_byte = bytes([self.arm_grab])
+
+            # 构建完整payload
+            payload = cmd_bytes + stepper1_bytes + \
+                stepper2_bytes + servo1_byte + servo2_byte
+
+            # 验证payload长度为8字节
+            if len(payload) != 8:
+                raise ValueError(
+                    f"Invalid payload length: {len(payload)}, should be 8 bytes")
+
+            # 发送控制命令
+            return send_protocol_message(self.comm, payload)
+
+        except Exception as e:
+            log_message(f"机械臂旋转控制失败: {str(e)}", level="error")
+            return False
+
+    def arm_plate_control(self, angle):
+        """
+        控制机械臂旋转盘角度（步进电机2）
+
+        Args:
+            angle (int): 旋转盘角度，范围[0, 359]度
+
+        Returns:
+            bool: 成功返回True，失败返回False
+        """
+        if not self.comm:
+            log_message("Communication interface not set", level="error")
+            return False
+
+        # 限制角度范围
+        angle_val = max(0, min(int(angle), 359))
+
+        log_message(f"机械臂旋转盘控制: angle={angle_val}°")
+
+        # 保存当前旋转盘角度
+        self.arm_plate_angle = angle_val
+
+        try:
+            # 命令类型: 0x02 0x00 (机械臂步进舵机控制)
+            cmd_bytes = bytes([0x02, 0x00])
+
+            # 步进电机1位置（假设为0，或使用已存储的值）
+            stepper1_bytes = bytes([0x00, 0x00])
+
+            # 步进电机2（旋转盘）位置
+            stepper2_bytes = angle_val.to_bytes(
+                2, byteorder='big', signed=False)
+
+            # 舵机1（机械臂旋转）和舵机2（夹爪开合）
+            servo1_byte = bytes([self.arm_rotate])
+            servo2_byte = bytes([self.arm_grab])
+
+            # 构建完整payload
+            payload = cmd_bytes + stepper1_bytes + \
+                stepper2_bytes + servo1_byte + servo2_byte
+
+            # 验证payload长度为8字节
+            if len(payload) != 8:
+                raise ValueError(
+                    f"Invalid payload length: {len(payload)}, should be 8 bytes")
+
+            # 发送控制命令
+            return send_protocol_message(self.comm, payload)
+
+        except Exception as e:
+            log_message(f"机械臂旋转盘控制失败: {str(e)}", level="error")
+            return False
+
+
 class PyGameController:
-    def __init__(self, vehicle_control=None):
+    def __init__(self, vehicle_control=None, arm_control=None):
         """Initialize PyGame controller
 
         Args:
             vehicle_control (VehicleControl, optional): 车辆控制对象
+            arm_control (ArmControl, optional): 机械臂控制对象
         """
         pygame.init()
         pygame.joystick.init()
 
         self.vehicle = vehicle_control
+        self.arm = arm_control
         self.joysticks = []
         self.active_joystick = None
         self.running = False
         self.thread = None
+
+        # 控制模式
+        self.arm_control_mode = False  # 默认为底盘控制模式
+        self.arm_height_increment = 5  # 每次按下Trigger机械臂高度变化值(mm)
+        self.arm_grab_state = 0  # 夹爪状态：0=打开，1=闭合
 
         # 控制参数
         self.deadzone = 0.1  # 摇杆死区
@@ -176,6 +487,14 @@ class PyGameController:
             self.max_speed = self.vehicle.max_speed
             self.max_rotation = self.vehicle.max_yaw_rate
 
+    def set_arm_control(self, arm_control):
+        """设置机械臂控制对象
+
+        Args:
+            arm_control (ArmControl): 机械臂控制对象
+        """
+        self.arm = arm_control
+
     def start(self):
         """启动控制器监听线程"""
         if not self.joysticks:
@@ -211,67 +530,155 @@ class PyGameController:
         """控制循环"""
         clock = pygame.time.Clock()
 
+        # 按钮状态存储（防止重复触发）
+        button_states = {}
+
         while self.running:
             # 处理pygame事件
-            for event in pygame.event.get():
-                pass  # 此处可以添加按钮事件处理
+            pygame.event.pump()
 
             if not self.active_joystick:
                 time.sleep(0.1)
                 continue
 
             try:
-                # 左摇杆控制方向 (axis 0 是x轴，axis 1是y轴)
-                steer_dir_x = self.active_joystick.get_axis(1)* -1
-                steer_dir_y = self.active_joystick.get_axis(0)* -1   
+                # 检测模式切换按钮
+                # Button2 - 进入机械臂控制模式
+                button2_pressed = self.active_joystick.get_button(2)
+                if button2_pressed and not button_states.get("button2", False) and not self.arm_control_mode:
+                    if self.arm:
+                        self.arm_control_mode = True
+                        log_message("已切换到机械臂控制模式")
+                    else:
+                        log_message("未设置机械臂控制对象，无法切换到机械臂控制模式", level="warning")
+                button_states["button2"] = button2_pressed
 
-                # 右摇杆控制旋转 (axis 2是x轴，axis 3是y轴)
-                steer_rotation_x = self.active_joystick.get_axis(2) * -1
-                # steer_rotation_y = self.active_joystick.get_axis(3)
+                # Button1 - 退出机械臂控制模式
+                button1_pressed = self.active_joystick.get_button(1)
+                if button1_pressed and not button_states.get("button1", False) and self.arm_control_mode:
+                    self.arm_control_mode = False
+                    log_message("已切换回底盘控制模式")
+                button_states["button1"] = button1_pressed
 
-                # 扳机控制油门 (axis 4是左扳机，axis 5是右扳机)
-                left_trigger = self.active_joystick.get_axis(
-                    4)  # 范围从-1到1，未按时为-1
-                right_trigger = self.active_joystick.get_axis(
-                    5)  # 范围从-1到1，未按时为-1
-
-                # 应用死区
-                steer_dir_x = 0 if abs(
-                    steer_dir_x) < self.deadzone else steer_dir_x
-                steer_dir_y = 0 if abs(
-                    steer_dir_y) < self.deadzone else steer_dir_y
-                steer_rotation_x = 0 if abs(
-                    steer_rotation_x) < self.deadzone else steer_rotation_x
-                # steer_rotation_y = 0 if abs(
-                #     steer_rotation_y) < self.deadzone else steer_rotation_y
-                # 计算运动控制值
-                # 将扳机值从[-1,1]映射到[0,1]
-                left_power = ((left_trigger + 1) / 2) * -1
-                right_power = (right_trigger + 1) / 2
-
-                # 计算前进/后退的合成速度
-                # forward_speed = right_power * self.max_speed
-                # backward_speed = left_power * -self.max_speed
-
-                vx = steer_dir_x * (left_power+right_power) *  self.max_speed  # 前进速度
-                vy = steer_dir_y * (left_power+right_power) * self.max_speed  # 侧向速度
-                vyaw = steer_rotation_x * (left_power+right_power)* self.max_rotation  # 旋转速度
-                vx = int(vx)
-                vy = int(vy)
-                vyaw = int(vyaw)
-                # 左摇杆控制旋转
-
-                # 发送控制命令
-                self.vehicle.velocity_control(int(vx), int(vy), int(vyaw))
-                # print(
-                #     f"steer_dir_x: {steer_dir_x}, steer_dir_y: {steer_dir_y}, steer_rotation_x: {steer_rotation_x}, left_power: {left_power}, right_power: {right_power}")
-                # print(f"vx: {vx}, vy: {vy}, vyaw: {vyaw}")
+                if self.arm_control_mode:
+                    # 机械臂控制模式
+                    self._handle_arm_control(button_states)
+                else:
+                    # 底盘控制模式
+                    self._handle_vehicle_control()
 
             except Exception as e:
                 log_message(f"控制器处理异常: {str(e)}", level="error")
 
             # 控制循环频率
-            clock.tick(20)  # 20Hz
+            clock.tick(15)  # 20Hz
+
+    def _handle_vehicle_control(self):
+        """处理底盘控制逻辑"""
+        if not self.vehicle:
+            return
+
+        # 左摇杆控制方向 (axis 0 是x轴，axis 1是y轴)
+        steer_dir_x = self.active_joystick.get_axis(1) * -1
+        steer_dir_y = self.active_joystick.get_axis(0) * -1
+
+        # 右摇杆控制旋转 (axis 2是x轴，axis 3是y轴)
+        steer_rotation_x = self.active_joystick.get_axis(2) * -1
+
+        # 扳机控制油门 (axis 4是左扳机，axis 5是右扳机)
+        left_trigger = self.active_joystick.get_axis(4)  # 范围从-1到1，未按时为-1
+        right_trigger = self.active_joystick.get_axis(5)  # 范围从-1到1，未按时为-1
+
+        # 应用死区
+        steer_dir_x = 0 if abs(steer_dir_x) < self.deadzone else steer_dir_x
+        steer_dir_y = 0 if abs(steer_dir_y) < self.deadzone else steer_dir_y
+        steer_rotation_x = 0 if abs(
+            steer_rotation_x) < self.deadzone else steer_rotation_x
+
+        # 计算运动控制值
+        # 将扳机值从[-1,1]映射到[0,1]
+        left_power = ((left_trigger + 1) / 2) * -1
+        right_power = (right_trigger + 1) / 2
+
+        vx = steer_dir_x * (left_power+right_power) * self.max_speed  # 前进速度
+        vy = steer_dir_y * (left_power+right_power) * self.max_speed  # 侧向速度
+        vyaw = steer_rotation_x * \
+            (left_power+right_power) * self.max_rotation  # 旋转速度
+
+        # 发送控制命令
+        self.vehicle.velocity_control(int(vx), int(vy), int(vyaw))
+
+    def _handle_arm_control(self, button_states):
+        """处理机械臂控制逻辑
+
+        Args:
+            button_states (dict): 按钮状态字典，用于防止重复触发
+        """
+        if not self.arm:
+            return
+
+        # 左右扳机控制机械臂高度
+        left_trigger = self.active_joystick.get_axis(4)  # 范围从-1到1
+        right_trigger = self.active_joystick.get_axis(5)  # 范围从-1到1
+
+        # 将扳机值从[-1,1]映射到[0,1]
+        left_power = (left_trigger + 1) / 2
+        right_power = (right_trigger + 1) / 2
+
+        # 只有当扳机值大于0.2才触发高度变化，防止误触
+        if left_power > 0.2:
+            # 左扳机下降
+            new_height = max(0, self.arm.arm_height -
+                             self.arm_height_increment)
+            if new_height != self.arm.arm_height:
+                log_message(f"机械臂高度下降: {self.arm.arm_height} -> {new_height}")
+                self.arm.arm_height_control(new_height)
+
+        if right_power > 0.2:
+            # 右扳机上升
+            new_height = min(self.arm.max_height,
+                             self.arm.arm_height + self.arm_height_increment)
+            if new_height != self.arm.arm_height:
+                log_message(f"机械臂高度上升: {self.arm.arm_height} -> {new_height}")
+                self.arm.arm_height_control(new_height)
+
+        # Button3 控制旋转盘旋转120°
+        button3_pressed = self.active_joystick.get_button(3)
+        if button3_pressed and not button_states.get("button3", False):
+            # 计算新的角度值（当前角度加上120°，并取模确保在0-359范围内）
+            new_angle = (self.arm.arm_plate_angle + 120) % 360
+            log_message(f"旋转盘旋转: {self.arm.arm_plate_angle}° -> {new_angle}°")
+            self.arm.arm_plate_control(new_angle)
+        button_states["button3"] = button3_pressed
+
+        # Button9/10 控制机械臂旋转方向
+        button9_pressed = self.active_joystick.get_button(9)
+        button10_pressed = self.active_joystick.get_button(10)
+
+        # 确保按钮状态有记录，防止第一次触发错误
+        if "button9" not in button_states:
+            button_states["button9"] = False
+        if "button10" not in button_states:
+            button_states["button10"] = False
+
+        if button9_pressed and not button_states.get("button9", False):
+            # Button9 朝后
+            self.arm.arm_rotate_control(1)
+        button_states["button9"] = button9_pressed
+
+        if button10_pressed and not button_states.get("button10", False):
+            # Button10 朝前
+            self.arm.arm_rotate_control(0)
+        button_states["button10"] = button10_pressed
+
+        # Button0 控制夹爪抓取或松开（切换状态）
+        button0_pressed = self.active_joystick.get_button(0)
+        if button0_pressed and not button_states.get("button0", False):
+            # 切换夹爪状态
+            self.arm_grab_state = 1 if self.arm_grab_state == 0 else 0
+            self.arm.arm_grab_control(self.arm_grab_state)
+            log_message(f"夹爪状态: {'闭合' if self.arm_grab_state == 1 else '打开'}")
+        button_states["button0"] = button0_pressed
 
 
 def keyboard_test(vehicle: VehicleControl):
@@ -337,12 +744,22 @@ if __name__ == '__main__':
     except Exception as e:
         log_message(f"初始化串口通信失败: {str(e)}", level="error")
         sys.exit(1)
+
+    # 初始化车辆控制对象
     vehicle = VehicleControl(config)
     vehicle.set_communication(serial_comm)
 
+    sleep(1)
+
+    # 初始化机械臂控制对象
+    arm = ArmControl(config)
+    arm.set_communication(serial_comm)
+    arm.initialize()
+
     # 初始化游戏控制器
-    controller = PyGameController(vehicle)
+    controller = PyGameController(vehicle, arm)
     controller.set_vehicle_control(vehicle)
+    controller.set_arm_control(arm)
     try:
         # 启动控制器监听
         if controller.start():
