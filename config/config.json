@@ -1,6 +1,14 @@
 {
     "model": {
-        "path": "models/yolov8-25-03-27.pt"
+        "path": "models/0414-model2/train/weights/best.onnx",
+        "classes": {
+            "0": "circle_blue",
+            "1": "circle_green",
+            "2": "circle_red",
+            "3": "object_blue",
+            "4": "object_green",
+            "5": "object_red"
+        }
     },
     "communication": {
         "com": "COM5",
@@ -11,9 +19,8 @@
         "max_speed": 3000,
         "max_yaw_rate": 3000
     },
-    "arm":{
-        
-        "max_height":425, 
+    "arm": {
+        "max_height": 425,
         "rotate_max_height": 200
     }
 }
