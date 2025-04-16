@@ -9,7 +9,7 @@
             "4": "object_green",
             "5": "object_red"
         },
-        "confidence_thres": 0.8,
+        "confidence_thres": 0.6,
         "iou_thres": 0.9,
         "input_size": {
             "width": 640,
