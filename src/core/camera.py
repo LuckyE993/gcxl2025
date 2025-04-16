@@ -273,12 +273,12 @@ def convert_bgr_to_rgb(image: np.ndarray) -> np.ndarray:
 
 # 测试代码
 if __name__ == "__main__":
-    # 列出可用摄像头
-    available_cameras = list_available_cameras()
-    print(f"可用摄像头: {available_cameras}")
+    # # 列出可用摄像头
+    # available_cameras = list_available_cameras()
+    # print(f"可用摄像头: {available_cameras}")
     
     # 创建并测试摄像头
-    camera = Camera(camera_id=0, resolution=(640, 480))
+    camera = Camera(camera_id = 1, resolution=(640, 480))
     if camera.open():
         print("摄像头属性:", camera.get_properties())
         

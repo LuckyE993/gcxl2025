@@ -9,11 +9,19 @@
             "4": "object_green",
             "5": "object_red"
         },
-        "confidence_thres":0.8,
-        "iou_thres":0.9,
+        "confidence_thres": 0.8,
+        "iou_thres": 0.9,
         "input_size": {
             "width": 640,
             "height": 640
+        }
+    },
+    "camera": {
+        "camera_id_front": 0,
+        "camera_id_down": 1,
+        "resolution": {
+            "width": 640,
+            "height": 480
         }
     },
     "communication": {

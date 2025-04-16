@@ -2,20 +2,15 @@ import os
 import time
 from src.utils.helpers import log_message
 from src.config.settings import get_config
-from src.core.camera import list_available_cameras
 from src.core.camera import Camera
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
-import argparse
-from typing import List, Tuple, Dict, Optional, Union
+from typing import List, Tuple, Dict, Optional
 
 import cv2
 import numpy as np
 import onnxruntime as ort
-import torch
 
-from ultralytics.utils import ASSETS, yaml_load
-from ultralytics.utils.checks import check_requirements, check_yaml
+from ultralytics.utils import yaml_load
+from ultralytics.utils.checks import check_yaml
 
 
 class Detector:
@@ -444,6 +439,243 @@ class YOLOv8(Detector):
         return result_image
 
 
+class QrCodeDetector(Detector):
+    """
+    QR码检测器类，用于识别和解码图像中的二维码。
+    
+    可以识别特定格式的任务编码，任务码由两组三位数组成，如"123+231"，
+    其中"1"代表红色，"2"代表绿色，"3"代表蓝色。
+    """
+    
+    def __init__(self):
+        """初始化QR码检测器"""
+        super().__init__()
+        # 初始化OpenCV的QR码检测器
+        self.qr_detector = cv2.QRCodeDetector()
+        log_message("初始化QR码检测器")
+        
+    def detect(self, image: np.ndarray, confidence: Optional[float] = None) -> List[Dict]:
+        """
+        检测图像中的二维码并解码
+        
+        Args:
+            image (np.ndarray): 输入图像
+            confidence (float, optional): 置信度阈值 (本类中不使用)
+            
+        Returns:
+            List[Dict]: 检测结果列表，每个元素包含:
+                - 'box': [x, y, w, h] 格式的边界框
+                - 'data': 解码后的数据
+                - 'is_valid': 是否为有效的任务码
+                - 'mission': 解析后的任务码 (如果有效)
+        """
+        # 检测和解码二维码
+        ret_val, decoded_info, points, _ = self.qr_detector.detectAndDecodeMulti(image)
+        
+        detections = []
+        if ret_val:
+            for i, data in enumerate(decoded_info):
+                if data:  # 如果成功解码
+                    # 计算边界框
+                    qr_points = points[i]
+                    x, y, w, h = self._calculate_bbox(qr_points)
+                    
+                    # 验证和解析任务码
+                    is_valid, mission = self._validate_mission_code(data)
+                    
+                    detections.append({
+                        'box': [x, y, w, h],
+                        'data': data,
+                        'is_valid': is_valid,
+                        'mission': mission if is_valid else None
+                    })
+        
+        return detections
+    
+    def _calculate_bbox(self, points: np.ndarray) -> List[int]:
+        """
+        从QR码角点计算边界框
+        
+        Args:
+            points (np.ndarray): QR码角点坐标
+            
+        Returns:
+            List[int]: [x, y, w, h] 格式的边界框
+        """
+        # 计算最小外接矩形
+        x_min = int(np.min(points[:, 0]))
+        y_min = int(np.min(points[:, 1]))
+        x_max = int(np.max(points[:, 0]))
+        y_max = int(np.max(points[:, 1]))
+        
+        # 返回左上角坐标和宽高
+        return [x_min, y_min, x_max - x_min, y_max - y_min]
+    
+    def _validate_mission_code(self, code: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        验证并解析任务码
+        
+        Args:
+            code (str): 解码后的QR码数据
+            
+        Returns:
+            Tuple[bool, Optional[Dict]]: 
+                - 是否为有效格式
+                - 解析后的任务信息 (如果有效)
+        """
+        # 检查任务码格式 (如 "123+231")
+        import re
+        pattern = r'^([123]{3})\+([123]{3})$'
+        match = re.match(pattern, code)
+        
+        if not match:
+            return False, None
+            
+        # 提取两组三位数
+        first_group = match.group(1)
+        second_group = match.group(2)
+        
+        # 解析颜色顺序
+        color_map = {'1': 'red', '2': 'green', '3': 'blue'}
+        
+        first_sequence = [color_map[digit] for digit in first_group]
+        second_sequence = [color_map[digit] for digit in second_group]
+        
+        mission = {
+            'raw_code': code,
+            'first_batch': first_sequence,
+            'second_batch': second_sequence
+        }
+        
+        return True, mission
+        
+    def visualize_detections(self, image: np.ndarray, detections: List[Dict]) -> np.ndarray:
+        """
+        在图像上可视化二维码检测结果
+        
+        Args:
+            image (np.ndarray): 输入图像
+            detections (List[Dict]): 检测结果列表
+            
+        Returns:
+            np.ndarray: 标注后的图像
+        """
+        # 创建图像副本
+        result_image = image.copy()
+        
+        for detection in detections:
+            # 获取边界框和数据
+            x, y, w, h = detection['box']
+            data = detection['data']
+            is_valid = detection['is_valid']
+            
+            # 根据有效性选择颜色 (绿色表示有效，红色表示无效)
+            color = (0, 255, 0) if is_valid else (0, 0, 255)
+            
+            # 绘制边界框
+            cv2.rectangle(result_image, (x, y), (x + w, y + h), color, 2)
+            
+            # 添加文本背景
+            text_bg = np.zeros((30, w + 20, 3), dtype=np.uint8)
+            text_bg[:, :] = (50, 50, 50)
+            
+            # 在图像上方显示解码数据
+            cv2.putText(text_bg, f"QR: {data}", (10, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            
+            # 将文本背景添加到图像中
+            bg_y = max(0, y - 30)
+            if bg_y + 30 <= result_image.shape[0] and x + w + 20 <= result_image.shape[1]:
+                # 注意：这里的alpha混合可能需要调整边缘情况
+                result_image[bg_y:bg_y+30, x:x+w+20] = \
+                    cv2.addWeighted(result_image[bg_y:bg_y+30, x:x+w+20], 0.5, text_bg, 0.5, 0)
+            
+            # 如果是有效的任务码，显示任务信息
+            if is_valid and detection['mission']:
+                mission = detection['mission']
+                batch1 = '->'.join(mission['first_batch'])
+                batch2 = '->'.join(mission['second_batch'])
+                
+                y_offset = y + h + 15
+                if y_offset < result_image.shape[0] - 40:
+                    cv2.putText(result_image, f"Batch 1: {batch1}", 
+                               (x, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+                    cv2.putText(result_image, f"Batch 2: {batch2}", 
+                               (x, y_offset + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        
+        return result_image
+    
+    def detect_from_camera(self, camera: Camera, display: bool = True) -> Optional[Dict]:
+        """
+        从摄像头检测二维码并返回有效的任务码
+        
+        Args:
+            camera (Camera): 摄像头实例
+            display (bool): 是否显示检测结果
+            
+        Returns:
+            Optional[Dict]: 如果找到有效任务码，返回任务信息，否则返回None
+        """
+        log_message("开始从摄像头检测QR码，按'q'退出")
+        
+        # 帧计数和FPS计算
+        frame_count = 0
+        start_time = cv2.getTickCount()
+        fps = 0
+        
+        while True:
+            # 读取帧
+            frame = camera.read_frame()
+            if frame is None:
+                log_message("无法从摄像头读取帧")
+                break
+            
+            # 检测二维码
+            detections = self.detect(frame)
+            
+            # 可视化检测结果
+            result_frame = self.visualize_detections(frame, detections)
+            
+            # 计算并显示FPS
+            frame_count += 1
+            if frame_count >= 10:  # 每10帧更新一次FPS
+                current_time = cv2.getTickCount()
+                elapsed_time = (current_time - start_time) / cv2.getTickFrequency()
+                fps = frame_count / elapsed_time
+                frame_count = 0
+                start_time = current_time
+            
+            # 添加FPS文本
+            cv2.putText(result_frame, f"FPS: {fps:.1f}", (20, 40), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # 显示检测数量
+            cv2.putText(result_frame, f"QR Codes: {len(detections)}", (20, 80),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # 显示图像
+            if display:
+                cv2.imshow("QR Code Detection", result_frame)
+            
+            # 检查是否有有效的任务码
+            for detection in detections:
+                if detection['is_valid']:
+                    if display:
+                        # 显示3秒后返回
+                        cv2.waitKey(3000)
+                        cv2.destroyAllWindows()
+                    return detection['mission']
+            
+            # 按'q'退出
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        if display:
+            cv2.destroyAllWindows()
+        
+        return None
+
+
 def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Optional[float] = None, display: bool = True) -> None:
     """
     Real-time object detection using camera feed.
@@ -517,6 +749,7 @@ def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Opt
 
 
 if __name__ == "__main__":
+
     camera = Camera(camera_id=0, resolution=(640, 480))
     try:
         if camera.open():
@@ -535,18 +768,33 @@ if __name__ == "__main__":
                 result_image = detector.visualize_detections(frame, detections)
                 cv2.imshow("YOLOv8 Detection", result_image)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
+                    cv2.destroyAllWindows()
                     break
 
-        # 捕获一张图像并保存
-        image = camera.read_frame()
-        if image is not None:
-            detections = detector.detect(frame)
-            result_image = detector.visualize_detections(frame, detections)
-            save_path = "captured_image.jpg"
-            cv2.imwrite(save_path, result_image)
-            print(f"图像已保存到: {save_path}")
-            cv2.imshow("Captured Image", result_image)
+        # # 捕获一张图像并保存
+        # image = camera.read_frame()
+        # if image is not None:
+        #     detections = detector.detect(frame)
+        #     result_image = detector.visualize_detections(frame, detections)
+        #     save_path = "captured_image.jpg"
+        #     cv2.imwrite(save_path, result_image)
+        #     print(f"图像已保存到: {save_path}")
+        #     cv2.imshow("Captured Image", result_image)
+        #     cv2.waitKey(0)
 
+        # 二维码检测模式
+
+        qr_detector = QrCodeDetector()
+        mission = qr_detector.detect_from_camera(camera)
+        
+        if mission:
+            print("检测到有效的任务码:")
+            print(f"  原始代码: {mission['raw_code']}")
+            print(f"  第一批: {' -> '.join(mission['first_batch'])}")
+            print(f"  第二批: {' -> '.join(mission['second_batch'])}")
+        else:
+            print("未检测到有效的任务码")
+            
         # 关闭摄像头
         camera.close()
         cv2.destroyAllWindows()
