@@ -35,6 +35,6 @@
     },
     "arm": {
         "max_height": 425,
-        "rotate_max_height": 200
+        "rotate_max_height": 250
     }
 }

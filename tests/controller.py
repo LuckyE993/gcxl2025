@@ -1,32 +1,33 @@
 import pygame
 import sys
 
-# 初始化Pygame
-pygame.init()
 
-# 设置窗口参数
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
-screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-pygame.display.set_caption("Gamepad Input Visualizer")
-
-# 初始化游戏手柄
-pygame.joystick.init()
-joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
-for joystick in joysticks:
-    joystick.init()
-
-# 颜色定义
-COLORS = {
-    "background": (30, 30, 30),
-    "button": (100, 100, 100),
-    "button_pressed": (0, 255, 0),
-    "axis": (200, 0, 0),
-    "text": (255, 255, 255)
-}
 
 # 主循环
 def main():
+    # 初始化Pygame
+    pygame.init()
+
+    # 设置窗口参数
+    WINDOW_WIDTH = 800
+    WINDOW_HEIGHT = 600
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+    pygame.display.set_caption("Gamepad Input Visualizer")
+
+    # 初始化游戏手柄
+    pygame.joystick.init()
+    joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
+    for joystick in joysticks:
+        joystick.init()
+
+    # 颜色定义
+    COLORS = {
+        "background": (30, 30, 30),
+        "button": (100, 100, 100),
+        "button_pressed": (0, 255, 0),
+        "axis": (200, 0, 0),
+        "text": (255, 255, 255)
+    }
     clock = pygame.time.Clock()
     
     while True:
@@ -108,5 +109,28 @@ def main():
         pygame.display.flip()
         clock.tick(60)
 
+def adapt():
+    # 适配器函数
+    # 这里可以添加适配器的逻辑
+    print("Adapter function called")
+
+    pygame.init()
+    pygame.joystick.init()
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
+
+    while True:
+        pygame.event.pump()
+        print("Axes:")
+        for i in range(joystick.get_numaxes()):
+            print(f"  Axis {i}: {joystick.get_axis(i)}")
+        print("Buttons:")
+        for i in range(joystick.get_numbuttons()):
+            print(f"  Button {i}: {joystick.get_button(i)}")
+        print("-" * 20)
+        import time
+        time.sleep(0.2)
+        
 if __name__ == "__main__":
-    main()
+    # main()
+    adapt()

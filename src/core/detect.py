@@ -750,7 +750,7 @@ def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Opt
 
 if __name__ == "__main__":
 
-    camera = Camera(camera_id=0, resolution=(640, 480))
+    camera = Camera(camera_id=2, resolution=(640, 480))
     try:
         if camera.open():
             print("摄像头属性:", camera.get_properties())
@@ -765,6 +765,8 @@ if __name__ == "__main__":
             frame = camera.read_frame()
             if frame is not None:
                 detections = detector.detect(frame)
+                for detection in detections:
+                    log_message(f"检测到物体: {detection['class_id']}，置信度: {detection['score']:.2f}",level="info")
                 result_image = detector.visualize_detections(frame, detections)
                 cv2.imshow("YOLOv8 Detection", result_image)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -782,18 +784,18 @@ if __name__ == "__main__":
         #     cv2.imshow("Captured Image", result_image)
         #     cv2.waitKey(0)
 
-        # 二维码检测模式
+        # # 二维码检测模式
 
-        qr_detector = QrCodeDetector()
-        mission = qr_detector.detect_from_camera(camera)
+        # qr_detector = QrCodeDetector()
+        # mission = qr_detector.detect_from_camera(camera)
         
-        if mission:
-            print("检测到有效的任务码:")
-            print(f"  原始代码: {mission['raw_code']}")
-            print(f"  第一批: {' -> '.join(mission['first_batch'])}")
-            print(f"  第二批: {' -> '.join(mission['second_batch'])}")
-        else:
-            print("未检测到有效的任务码")
+        # if mission:
+        #     print("检测到有效的任务码:")
+        #     print(f"  原始代码: {mission['raw_code']}")
+        #     print(f"  第一批: {' -> '.join(mission['first_batch'])}")
+        #     print(f"  第二批: {' -> '.join(mission['second_batch'])}")
+        # else:
+        #     print("未检测到有效的任务码")
             
         # 关闭摄像头
         camera.close()

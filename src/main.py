@@ -190,39 +190,41 @@ def adjust_position_to_target(target_class_id, detections, pixel_distance_ratio,
 
     return False
 
+
 def move_and_wait_for_completion(vehicle, x, y, angle=0, timeout=20):
     """
     发送位置移动命令并等待完成
-    
+
     Args:
         vehicle: 车辆控制对象
         x (float): X轴移动距离
         y (float): Y轴移动距离
         angle (float, optional): 旋转角度，默认为0
         timeout (int, optional): 超时时间(秒)，默认为20秒
-        
+
     Returns:
         bool: 如果位置调整完成返回True，超时返回False
     """
     global positionFinish
     positionFinish = False
-    
+
     # 发送位置调整命令
     log_message(f"发送位置移动命令: x={x:.2f}, y={y:.2f}, angle={angle:.2f}")
     vehicle.position_control(x, y, angle)
-    
+
     # 等待位置调整完成
     log_message("等待位置调整完成...")
     start_time = time.time()
-    
+
     while not positionFinish:
         time.sleep(0.1)
         if time.time() - start_time > timeout:
             log_message("位置调整超时", level="warning")
             return False
-    
+
     log_message("位置调整完成")
     return True
+
 
 class State:
     def execute(self, context):
@@ -234,13 +236,14 @@ class State:
 class ActionGroup1State(State):
     def execute(self, context):
         log_message("执行 动作组1: 出库移动")
+        
         # 使用函数进行移动并等待完成
         if move_and_wait_for_completion(context.vehicle, -230, 175, 0, timeout=5):
             log_message("出库完成，开始扫码")
-            
+
         else:
             log_message("出库执行失败", level="error")
-            
+
         context.current_state = ScanState()
 
 
@@ -284,122 +287,124 @@ class MoveToRawMaterialAreaState(State):
 class GrabAtRawMaterialState_Step4(State):
     def execute(self, context):
         log_message("执行 动作组3 和 识别2: 原料区抓取")
-        context.scanned_data = "123321"
+        
         # 解析扫描数据，确定抓取顺序
         if not context.scanned_data or len(context.scanned_data) < 3:
             log_message("扫描数据不完整，无法确定抓取顺序", level="error")
             return
-        
+
         # 获取抓取顺序（1=红色，2=绿色，3=蓝色）
         grab_order = context.scanned_data[:3]
         log_message(f"抓取顺序: {grab_order}")
-        
+
         # 颜色ID映射
         color_map = {
             '1': {'name': '红色', 'class_id': 5},
             '2': {'name': '绿色', 'class_id': 4},
             '3': {'name': '蓝色', 'class_id': 3}
         }
-        
+
         # 记录已抓取的物料
         grabbed_items = []
-        
+
         # 按顺序抓取
         for color_code in grab_order:
             if color_code not in color_map:
                 log_message(f"未知颜色代码: {color_code}", level="warning")
                 continue
-                
+
             color_info = color_map[color_code]
             log_message(f"准备抓取 {color_info['name']} 物料")
-            
+            context.arm.arm_height_control(180)
             # 物体稳定性检测
-            stable_detections = self.wait_for_stable_object(context, color_info['class_id'])
-            
+            stable_detections = self.wait_for_stable_object(
+                context, color_info['class_id'],stability_threshold=2)
+
             if stable_detections:
                 log_message(f"检测到稳定的 {color_info['name']} 物料，开始抓取")
                 # 使用占位函数执行抓取
-                grap_temp(color_info['name'], grabbed_items)
+                grap(context=context, color=color_info['name'], platelist=grabbed_items)
                 grabbed_items.append(color_info['name'])
             else:
-                log_message(f"未能检测到稳定的 {color_info['name']} 物料", level="warning")
-        
+                log_message(
+                    f"未能检测到稳定的 {color_info['name']} 物料", level="warning")
+
         log_message("物料抓取完成，准备移动到粗加工区")
         context.current_state = MoveToRoughProcessingState_Step5()
-    
+
     def wait_for_stable_object(self, context, target_class_id, stability_threshold=3):
         """
         等待目标物体稳定后返回检测结果
-        
+
         Args:
             context: 执行上下文
             target_class_id: 目标物体的类别ID
             stability_threshold: 连续稳定帧数阈值
-            
+
         Returns:
             稳定的检测结果或None
         """
         log_message(f"等待类别ID为 {target_class_id} 的物体稳定...")
-        
+
         # 记录连续稳定的帧数
         stable_frames = 0
-        
+
         # 上一帧的检测结果
         last_detection = None
-        
+
         # 最大等待时间（秒）
         max_wait_time = 30
         start_time = time.time()
-        
+
         while stable_frames < stability_threshold:
             # 检查是否超时
             if time.time() - start_time > max_wait_time:
                 log_message("等待物体稳定超时", level="warning")
                 return None
-                
+
             # 获取一帧图像
             frame = context.camera_down.read_frame()
             if frame is None:
                 log_message("无法读取图像帧", level="error")
                 time.sleep(0.1)
                 continue
-                
+
             # 执行物体检测
             detections = context.detector.detect(frame)
-            
+
             # 查找目标类别
             target_detection = None
             for detection in detections:
                 if detection['class_id'] == target_class_id:
                     target_detection = detection
                     break
-            
+
             if target_detection is None:
                 log_message(f"未检测到类别ID为 {target_class_id} 的物体")
                 stable_frames = 0
                 time.sleep(0.1)
                 continue
-                
+
             # 如果是第一次检测到目标
             if last_detection is None:
                 last_detection = target_detection
                 stable_frames = 1
                 continue
-                
+
             # 计算与上一帧的位置差异
             current_box = target_detection['box']
             last_box = last_detection['box']
-            
+
             # 计算中心点
             current_center_x = current_box[0] + current_box[2] // 2
             current_center_y = current_box[1] + current_box[3] // 2
             last_center_x = last_box[0] + last_box[2] // 2
             last_center_y = last_box[1] + last_box[3] // 2
-            
+
             # 计算位置差异
-            distance = ((current_center_x - last_center_x) ** 2 + 
+            distance = ((current_center_x - last_center_x) ** 2 +
                         (current_center_y - last_center_y) ** 2) ** 0.5
-            
+
             # 判断是否稳定（位置变化小于10像素）
             if distance < 10:
                 stable_frames += 1
@@ -407,25 +412,50 @@ class GrabAtRawMaterialState_Step4(State):
             else:
                 stable_frames = 0
                 log_message(f"物体不稳定，位置变化: {distance:.2f}px")
-                
+
             last_detection = target_detection
             time.sleep(0.1)
-            
+
         log_message("物体位置稳定，准备抓取")
         return last_detection
 
 # 临时抓取函数，实际实现中需要替换为真正的抓取逻辑
-def grap_temp(color, platelist):
+
+
+def grap(context,color, platelist):
     """
     临时抓取函数
-    
+
     Args:
         color (str): 要抓取的颜色
         platelist (list): 已抓取物料列表
     """
     log_message(f"抓取 {color} 物料（占位函数）")
-    # 实际应该在这里实现抓取动作
-    time.sleep(1)  # 模拟抓取时间
+    # 放下机械臂
+    context.arm.arm_height_control(370)
+    time.sleep(1.5)
+    # 夹爪闭合
+    context.arm.arm_grab_control(1)
+    time.sleep(0.8)
+    # 机械臂抬起
+    context.arm.arm_height_control(75)
+    time.sleep(1.5)
+    #机械臂旋转
+    context.arm.arm_rotate_control(1)
+    time.sleep(1)
+    # 夹爪打开
+    context.arm.arm_grab_control(0)
+    time.sleep(0.8)
+    # 机械臂抬起
+    context.arm.arm_height_control(20)
+    time.sleep(1)
+    # 机械臂旋转
+    context.arm.arm_rotate_control(0)
+    time.sleep(0.8)
+    # 转盘旋转
+    context.plate_angle+=120
+    context.arm.arm_plate_control(context.plate_angle)
+    
     log_message(f"{color} 物料抓取完成")
 
 
@@ -540,10 +570,12 @@ class RobotContext:
         self.communication = communication
         self.detector = detector
         self.qr_detector = qr_detector
-        self.current_state = GrabAtRawMaterialState_Step4()
+        self.current_state = ActionGroup1State()
+        self.plate_angle = 14
         self.scanned_data = []
 
     def run(self):
+        self.arm.arm_plate_control(self.plate_angle)
         while self.current_state is not None:
             self.current_state.execute(self)
 
