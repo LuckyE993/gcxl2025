@@ -9,6 +9,14 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+# Add OpenVINO import
+try:
+    import openvino as ov
+    OPENVINO_AVAILABLE = True
+except ImportError:
+    OPENVINO_AVAILABLE = False
+    log_message("OpenVINO not available. Install with 'pip install openvino'", level="warning")
+
 from ultralytics.utils import yaml_load
 from ultralytics.utils.checks import check_yaml
 
@@ -72,7 +80,8 @@ class YOLOv8(Detector):
     YOLOv8 object detection model class for handling inference and visualization.
 
     This class provides functionality to load a YOLOv8 ONNX model, perform inference on images,
-    and visualize the detection results.
+    and visualize the detection results. It also supports OpenVINO INT8 quantized models for
+    faster inference on compatible hardware.
 
     Attributes:
         onnx_model (str): Path to the ONNX model file.
@@ -82,9 +91,14 @@ class YOLOv8(Detector):
         color_palette (np.ndarray): Random color palette for visualizing different classes.
         input_width (int): Width dimension of the model input.
         input_height (int): Height dimension of the model input.
+        backend (str): Inference backend to use ('onnx' or 'openvino').
     """
 
-    def __init__(self, onnx_model: str = "models/default.onnx", confidence_thres: float = 0.5, iou_thres: float = 0.5):
+    def __init__(self, 
+                 onnx_model: str = "models/default.onnx", 
+                 confidence_thres: float = 0.5, 
+                 iou_thres: float = 0.5,
+                 backend: str = "onnx"):
         """
         Initialize an instance of the YOLOv8 class.
 
@@ -92,16 +106,28 @@ class YOLOv8(Detector):
             onnx_model (str): Path to the ONNX model.
             confidence_thres (float): Confidence threshold for filtering detections.
             iou_thres (float): IoU threshold for non-maximum suppression.
+            backend (str): Inference backend to use ('onnx' or 'openvino').
         """
         super().__init__(confidence_thres, iou_thres)
+        
+        # Backend selection
+        self.backend = backend.lower()
+        if self.backend == "openvino" and not OPENVINO_AVAILABLE:
+            log_message("OpenVINO requested but not available. Falling back to ONNX Runtime.", level="warning")
+            self.backend = "onnx"
 
         # Load config to get class names and colors
         config = get_config()
 
         # Try to load class names from config, fallback to COCO dataset if not found
         try:
-            self.onnx_model = config['model']['path']
-            log_message(f"使用的模型路径: {self.onnx_model}")
+            # Check if we should use OpenVINO model from config
+            if self.backend == "openvino" and 'openvino-int8' in config['model']:
+                self.model_path = config['model']['openvino-int8']
+                log_message(f"使用OpenVINO INT8模型路径: {self.model_path}")
+            else:
+                self.model_path = config['model']['path']
+                log_message(f"使用的模型路径: {self.model_path}")
 
             # Load class names from config
             class_dict = config.get('model', {}).get('classes', {})
@@ -134,7 +160,7 @@ class YOLOv8(Detector):
             self.classes = yaml_load(check_yaml("coco8.yaml"))["names"]
             self.class_list = self.classes
             log_message(f"使用的模型路径: {onnx_model}")
-            self.onnx_model = onnx_model
+            self.model_path = onnx_model
             log_message(f"使用的置信度阈值: {confidence_thres}")
             log_message(f"使用的IoU阈值: {iou_thres}")
             self.input_width = 640  # Default, will be updated from model
@@ -170,7 +196,51 @@ class YOLOv8(Detector):
         return colors
 
     def _initialize_model(self):
-        """Initialize the ONNX model session and set input dimensions."""
+        """Initialize the model session with either ONNX Runtime or OpenVINO."""
+        log_message(f"使用 {self.backend} 后端初始化模型")
+        
+        if self.backend == "openvino":
+            try:
+                # Initialize OpenVINO runtime
+                self.core = ov.Core()
+                
+                # Check if model_path is a directory (OpenVINO IR format) or a file
+                if os.path.isdir(self.model_path):
+                    model_xml = os.path.join(self.model_path, "best.xml")
+                    model_bin = os.path.join(self.model_path, "best.bin")
+                    if not os.path.exists(model_xml):
+                        raise FileNotFoundError(f"OpenVINO XML file not found: {model_xml}")
+                    log_message(f"加载OpenVINO IR模型: {model_xml}")
+                    model = self.core.read_model(model_xml)
+                else:
+                    # Assume it's a direct path to an XML file
+                    model = self.core.read_model(self.model_path)
+                
+                # Get input details
+                self.model_input_name = model.input(0).any_name
+                input_shape = model.input(0).shape
+                # OpenVINO typically uses NCHW format
+                if len(input_shape) == 4:  # NCHW format
+                    self.input_width = input_shape[3]
+                    self.input_height = input_shape[2]
+                
+                # Compile the model for the CPU device (you can change to GPU, MYRIAD, etc.)
+                self.compiled_model = self.core.compile_model(model, device_name="CPU")
+                self.infer_request = self.compiled_model.create_infer_request()
+                
+                log_message(f"OpenVINO模型初始化完成，输入尺寸: {self.input_width}x{self.input_height}")
+            
+            except Exception as e:
+                log_message(f"OpenVINO模型初始化失败: {e}", level="error")
+                log_message("回退到ONNX Runtime", level="warning")
+                self.backend = "onnx"
+                self._initialize_onnx_model()
+        else:
+            # Initialize with ONNX Runtime
+            self._initialize_onnx_model()
+
+    def _initialize_onnx_model(self):
+        """Initialize the model using ONNX Runtime."""
         # 配置推理选项以优化性能
         session_options = ort.SessionOptions()
 
@@ -184,7 +254,7 @@ class YOLOv8(Detector):
         session_options.intra_op_num_threads = os.cpu_count()  # 使用所有可用的CPU核心
         # Create an inference session using the ONNX model and specify execution providers
         self.session = ort.InferenceSession(
-            self.onnx_model,
+            self.model_path,
             sess_options=session_options,
             providers=["CPUExecutionProvider"]
         )
@@ -197,7 +267,7 @@ class YOLOv8(Detector):
         self.model_input_name = model_inputs[0].name
 
         log_message(
-            f"YOLO模型初始化完成，输入尺寸: {self.input_width}x{self.input_height}")
+            f"ONNX模型初始化完成，输入尺寸: {self.input_width}x{self.input_height}")
 
     def letterbox(self, img: np.ndarray, new_shape: Tuple[int, int] = (640, 640)) -> Tuple[np.ndarray, Tuple[int, int]]:
         """
@@ -401,8 +471,16 @@ class YOLOv8(Detector):
             # Preprocess the image
             img_data, pad = self.preprocess(image)
 
-            # Run inference
-            outputs = self.session.run(None, {self.model_input_name: img_data})
+            # Run inference based on the selected backend
+            if self.backend == "openvino":
+                # OpenVINO inference
+                input_tensor = ov.Tensor(array=img_data)
+                self.infer_request.set_input_tensor(input_tensor)
+                self.infer_request.infer()
+                outputs = [self.infer_request.get_output_tensor(0).data]
+            else:
+                # ONNX Runtime inference
+                outputs = self.session.run(None, {self.model_input_name: img_data})
 
             # Postprocess the outputs
             detections = self.postprocess(image, outputs, pad)
@@ -750,7 +828,7 @@ def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Opt
 
 if __name__ == "__main__":
 
-    camera = Camera(camera_id=2, resolution=(640, 480))
+    camera = Camera(camera_id=0, resolution=(640, 480))
     try:
         if camera.open():
             print("摄像头属性:", camera.get_properties())
@@ -758,45 +836,73 @@ if __name__ == "__main__":
         print(f"摄像头打开失败: {e}")
         exit(1)
 
-    detector = YOLOv8()
+    # 使用不同的后端初始化检测器
+    # 选择 'onnx' 或 'openvino' 作为后端
+    backend = 'openvino'  # 可以改为 'onnx'
+    
+    detector = YOLOv8(backend=backend)
+    log_message(f"使用 {backend} 后端进行推理")
+    
     try:
-
+        print(f"按 'q' 键退出，按 's' 键切换推理后端")
+        current_backend = backend
+        
         while True:
             frame = camera.read_frame()
             if frame is not None:
+                start_time = time.time()
                 detections = detector.detect(frame)
+                inference_time = (time.time() - start_time) * 1000
+                
                 for detection in detections:
-                    log_message(f"检测到物体: {detection['class_id']}，置信度: {detection['score']:.2f}",level="info")
+                    log_message(f"检测到物体: {detector.class_list[detection['class_id']]}，"
+                               f"置信度: {detection['score']:.2f}", level="info")
+                               
                 result_image = detector.visualize_detections(frame, detections)
+                
+                # 显示推理时间和当前后端
+                cv2.putText(result_image, f"Backend: {detector.backend}", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(result_image, f"Inference: {inference_time:.1f}ms", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
                 cv2.imshow("YOLOv8 Detection", result_image)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+                
+                if key == ord('q'):
                     cv2.destroyAllWindows()
                     break
+                elif key == ord('s'):
+                    # 切换后端
+                    new_backend = 'onnx' if detector.backend == 'openvino' else 'openvino'
+                    log_message(f"切换后端从 {detector.backend} 到 {new_backend}")
+                    detector = YOLOv8(backend=new_backend)
 
-        # # 捕获一张图像并保存
-        # image = camera.read_frame()
-        # if image is not None:
-        #     detections = detector.detect(frame)
-        #     result_image = detector.visualize_detections(frame, detections)
-        #     save_path = "captured_image.jpg"
-        #     cv2.imwrite(save_path, result_image)
-        #     print(f"图像已保存到: {save_path}")
-        #     cv2.imshow("Captured Image", result_image)
-        #     cv2.waitKey(0)
+            # # 捕获一张图像并保存
+            # image = camera.read_frame()
+            # if image is not None:
+            #     detections = detector.detect(frame)
+            #     result_image = detector.visualize_detections(frame, detections)
+            #     save_path = "captured_image.jpg"
+            #     cv2.imwrite(save_path, result_image)
+            #     print(f"图像已保存到: {save_path}")
+            #     cv2.imshow("Captured Image", result_image)
+            #     cv2.waitKey(0)
 
-        # # 二维码检测模式
+            # # 二维码检测模式
 
-        # qr_detector = QrCodeDetector()
-        # mission = qr_detector.detect_from_camera(camera)
-        
-        # if mission:
-        #     print("检测到有效的任务码:")
-        #     print(f"  原始代码: {mission['raw_code']}")
-        #     print(f"  第一批: {' -> '.join(mission['first_batch'])}")
-        #     print(f"  第二批: {' -> '.join(mission['second_batch'])}")
-        # else:
-        #     print("未检测到有效的任务码")
+            # qr_detector = QrCodeDetector()
+            # mission = qr_detector.detect_from_camera(camera)
             
+            # if mission:
+            #     print("检测到有效的任务码:")
+            #     print(f"  原始代码: {mission['raw_code']}")
+            #     print(f"  第一批: {' -> '.join(mission['first_batch'])}")
+            #     print(f"  第二批: {' -> '.join(mission['second_batch'])}")
+            # else:
+            #     print("未检测到有效的任务码")
+                
+
         # 关闭摄像头
         camera.close()
         cv2.destroyAllWindows()
@@ -808,3 +914,4 @@ if __name__ == "__main__":
         log_message("摄像头关闭")
         cv2.destroyAllWindows()
         print("程序结束")
+

@@ -606,7 +606,7 @@ def main():
     controller.set_vehicle_control(vehicle)
     controller.set_arm_control(arm)
 
-    detector = detect.YOLOv8()
+    detector = detect.YOLOv8(backend="openvino")
     qr_detector = detect.QrCodeDetector()
 
     context = RobotContext(vehicle, arm, serial_comm, detector,
