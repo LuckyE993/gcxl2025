@@ -232,23 +232,36 @@ class State:
 
 # 具体状态类
 
+class TestState(State):
+    def execute(self, context):
+        log_message("执行 TestState: 测试状态")
+        time.sleep(1)
+        if move_and_wait_for_completion(vehicle=context.vehicle, x=0, y=600, angle=0, timeout=30):
+            log_message("测试状态1完成")
+        time.sleep(0.5)
+        if move_and_wait_for_completion(vehicle=context.vehicle, x=0, y=-600, angle=0, timeout=30):
+            log_message("测试状态1完成")
+            
+        context.current_state = GrabAtRawMaterialState_Step4()
 
 class ActionGroup1State(State):
     def execute(self, context):
         log_message("执行 动作组1: 出库移动")
-        
+        time.sleep(0.5)
         # 使用函数进行移动并等待完成
-        if move_and_wait_for_completion(context.vehicle, -230, 175, 0, timeout=5):
+        if move_and_wait_for_completion(vehicle=context.vehicle, x=-230, y=175, angle=0, timeout=15):
             log_message("出库完成，开始扫码")
 
         else:
             log_message("出库执行失败", level="error")
-
-        context.current_state = ScanState()
+        
+        context.current_state = GrabAtRawMaterialState_Step4()
 
 
 class ScanState(State):
     def execute(self, context):
+        move_and_wait_for_completion(vehicle=context.vehicle, x=500, y=0, angle=0, timeout=15)
+        
         mission = context.qr_detector.detect_from_camera(
             context.camera_front, display=False)
 
@@ -287,7 +300,7 @@ class MoveToRawMaterialAreaState(State):
 class GrabAtRawMaterialState_Step4(State):
     def execute(self, context):
         log_message("执行 动作组3 和 识别2: 原料区抓取")
-        
+        context.scanned_data = "123321"
         # 解析扫描数据，确定抓取顺序
         if not context.scanned_data or len(context.scanned_data) < 3:
             log_message("扫描数据不完整，无法确定抓取顺序", level="error")
@@ -323,7 +336,7 @@ class GrabAtRawMaterialState_Step4(State):
             if stable_detections:
                 log_message(f"检测到稳定的 {color_info['name']} 物料，开始抓取")
                 # 使用占位函数执行抓取
-                grap(context=context, color=color_info['name'], platelist=grabbed_items)
+                grab(context=context, color=color_info['name'], platelist=grabbed_items)
                 grabbed_items.append(color_info['name'])
             else:
                 log_message(
@@ -422,9 +435,9 @@ class GrabAtRawMaterialState_Step4(State):
 # 临时抓取函数，实际实现中需要替换为真正的抓取逻辑
 
 
-def grap(context,color, platelist):
+def grab(context,color, platelist):
     """
-    临时抓取函数
+    原料区抓取函数
 
     Args:
         color (str): 要抓取的颜色
@@ -468,6 +481,12 @@ class MoveToRoughProcessingState_Step5(State):
 class AdjustPositionWithRingState_Step6(State):
     def execute(self, context):
         log_message("执行 动作组5 和 识别2: 根据圆环矫正位置")
+        # 解析扫描数据，确定抓取顺序
+        if not context.scanned_data or len(context.scanned_data) < 3:
+            log_message("扫描数据不完整，无法确定抓取顺序", level="error")
+            return
+        
+        
         context.current_state = PlaceAtRoughProcessingState_Step7()
 
 
@@ -570,12 +589,13 @@ class RobotContext:
         self.communication = communication
         self.detector = detector
         self.qr_detector = qr_detector
-        self.current_state = ActionGroup1State()
+        self.current_state = GrabAtRawMaterialState_Step4()
         self.plate_angle = 14
         self.scanned_data = []
 
     def run(self):
         self.arm.arm_plate_control(self.plate_angle)
+        
         while self.current_state is not None:
             self.current_state.execute(self)
 
@@ -600,7 +620,7 @@ def main():
 
     # 初始化车辆和机械臂控制器
     vehicle, arm = initialize_controllers(config, serial_comm)
-
+    
     # 初始化游戏控制器
     controller = control.PyGameController(vehicle, arm)
     controller.set_vehicle_control(vehicle)

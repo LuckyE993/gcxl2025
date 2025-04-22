@@ -204,31 +204,36 @@ class YOLOv8(Detector):
                 # Initialize OpenVINO runtime
                 self.core = ov.Core()
                 
-                # Check if model_path is a directory (OpenVINO IR format) or a file
+                # 设置额外的配置参数
+                config = {
+                    "PERFORMANCE_HINT": "LATENCY",
+                    "INFERENCE_NUM_THREADS": 8,
+                    "CACHE_DIR": "./model_cache"
+                }
+                
+                # 读取模型
                 if os.path.isdir(self.model_path):
                     model_xml = os.path.join(self.model_path, "best.xml")
-                    model_bin = os.path.join(self.model_path, "best.bin")
                     if not os.path.exists(model_xml):
                         raise FileNotFoundError(f"OpenVINO XML file not found: {model_xml}")
-                    log_message(f"加载OpenVINO IR模型: {model_xml}")
                     model = self.core.read_model(model_xml)
                 else:
-                    # Assume it's a direct path to an XML file
                     model = self.core.read_model(self.model_path)
                 
-                # Get input details
+                # 获取输入细节
                 self.model_input_name = model.input(0).any_name
                 input_shape = model.input(0).shape
-                # OpenVINO typically uses NCHW format
-                if len(input_shape) == 4:  # NCHW format
+                if len(input_shape) == 4:
                     self.input_width = input_shape[3]
                     self.input_height = input_shape[2]
                 
-                # Compile the model for the CPU device (you can change to GPU, MYRIAD, etc.)
-                self.compiled_model = self.core.compile_model(model, device_name="CPU")
+                # 使用优化配置编译模型
+                self.compiled_model = self.core.compile_model(model, device_name="CPU", config=config)
+                # 创建多个推理请求以支持异步处理
                 self.infer_request = self.compiled_model.create_infer_request()
                 
                 log_message(f"OpenVINO模型初始化完成，输入尺寸: {self.input_width}x{self.input_height}")
+        
             
             except Exception as e:
                 log_message(f"OpenVINO模型初始化失败: {e}", level="error")
@@ -355,6 +360,10 @@ class YOLOv8(Detector):
             (np.ndarray): Preprocessed image data ready for inference with shape (1, 3, height, width).
             (Tuple[int, int]): Padding values (top, left) applied during letterboxing.
         """
+        scale = 0.5  # 缩放比例：0.5表示降至原来的一半
+        if scale != 1.0:
+            img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
+    
         # 避免不必要的复制
         if img.shape[2] == 3:  # 确保是BGR格式
             # 使用更快的转换方法
@@ -449,42 +458,30 @@ class YOLOv8(Detector):
         return detections
 
     def detect(self, image: np.ndarray, confidence: Optional[float] = None) -> List[Dict]:
-        """
-        Detect objects in the input image.
-
-        Args:
-            image (np.ndarray): Input image for detection
-            confidence (float, optional): Override default confidence threshold
-
-        Returns:
-            List[Dict]: List of detection results with keys:
-                - 'box': [x, y, w, h] format bounding box
-                - 'score': confidence score
-                - 'class_id': class identifier
-        """
         # Save original confidence and update if needed
         original_confidence = self.confidence_thres
         if confidence is not None:
             self.confidence_thres = confidence
-
+    
         try:
             # Preprocess the image
             img_data, pad = self.preprocess(image)
-
+    
             # Run inference based on the selected backend
             if self.backend == "openvino":
-                # OpenVINO inference
+                # OpenVINO 异步推理
                 input_tensor = ov.Tensor(array=img_data)
                 self.infer_request.set_input_tensor(input_tensor)
-                self.infer_request.infer()
+                self.infer_request.start_async()
+                self.infer_request.wait()
                 outputs = [self.infer_request.get_output_tensor(0).data]
             else:
                 # ONNX Runtime inference
                 outputs = self.session.run(None, {self.model_input_name: img_data})
-
+    
             # Postprocess the outputs
             detections = self.postprocess(image, outputs, pad)
-
+    
             return detections
         finally:
             # Restore original confidence threshold
@@ -828,7 +825,7 @@ def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Opt
 
 if __name__ == "__main__":
 
-    camera = Camera(camera_id=0, resolution=(640, 480))
+    camera = Camera(camera_id=2, resolution=(640, 480))
     try:
         if camera.open():
             print("摄像头属性:", camera.get_properties())
@@ -846,37 +843,41 @@ if __name__ == "__main__":
     try:
         print(f"按 'q' 键退出，按 's' 键切换推理后端")
         current_backend = backend
+                # 在主循环中添加帧跳过策略
+        processing = False
         
         while True:
             frame = camera.read_frame()
-            if frame is not None:
+            
+            # 如果当前正在处理一帧，跳过此帧
+            if not processing and frame is not None:
+                processing = True
+                
                 start_time = time.time()
                 detections = detector.detect(frame)
                 inference_time = (time.time() - start_time) * 1000
+                log_message(f"inf time{inference_time}")
+                # result_image = detector.visualize_detections(frame, detections)
                 
-                for detection in detections:
-                    log_message(f"检测到物体: {detector.class_list[detection['class_id']]}，"
-                               f"置信度: {detection['score']:.2f}", level="info")
-                               
-                result_image = detector.visualize_detections(frame, detections)
+                # # 显示推理时间和当前后端
+                # cv2.putText(result_image, f"Backend: {detector.backend}", (10, 30),
+                #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # cv2.putText(result_image, f"Inference: {inference_time:.1f}ms", (10, 60),
+                #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                # 显示推理时间和当前后端
-                cv2.putText(result_image, f"Backend: {detector.backend}", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(result_image, f"Inference: {inference_time:.1f}ms", (10, 60),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # cv2.imshow("YOLOv8 Detection", result_image)
+                processing = False
                 
-                cv2.imshow("YOLOv8 Detection", result_image)
-                key = cv2.waitKey(1) & 0xFF
-                
-                if key == ord('q'):
-                    cv2.destroyAllWindows()
-                    break
-                elif key == ord('s'):
-                    # 切换后端
-                    new_backend = 'onnx' if detector.backend == 'openvino' else 'openvino'
-                    log_message(f"切换后端从 {detector.backend} 到 {new_backend}")
-                    detector = YOLOv8(backend=new_backend)
+            # # 确保UI响应，即使在处理帧
+            # key = cv2.waitKey(1) & 0xFF
+            # if key == ord('q'):
+            #     cv2.destroyAllWindows()
+            #     break
+            # elif key == ord('s'):
+            #     # 切换后端
+            #     new_backend = 'onnx' if detector.backend == 'openvino' else 'openvino'
+            #     log_message(f"切换后端从 {detector.backend} 到 {new_backend}")
+            #     detector = YOLOv8(backend=new_backend)
 
             # # 捕获一张图像并保存
             # image = camera.read_frame()

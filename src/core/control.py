@@ -608,12 +608,12 @@ class PyGameController:
         else:
             # Ubuntu 映射
             axis_map = {
-                "lx": 0, "ly": 1, "rx": 3, "lt": 2, "rt": 5
+                "lx": 1, "ly": 0, "rx": 3, "lt": 2, "rt": 5
             }
 
-        steer_dir_x = self.active_joystick.get_axis(axis_map["lx"])
-        steer_dir_y = self.active_joystick.get_axis(axis_map["ly"])
-        steer_rotation_x = self.active_joystick.get_axis(axis_map["rx"])
+        steer_dir_x = self.active_joystick.get_axis(axis_map["lx"])*-1
+        steer_dir_y = self.active_joystick.get_axis(axis_map["ly"])*-1
+        steer_rotation_x = self.active_joystick.get_axis(axis_map["rx"])*-1
         left_trigger = self.active_joystick.get_axis(axis_map["lt"])
         right_trigger = self.active_joystick.get_axis(axis_map["rt"])
         # # 左摇杆控制方向 (axis 0 是x轴，axis 1是y轴)
