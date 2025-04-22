@@ -360,10 +360,6 @@ class YOLOv8(Detector):
             (np.ndarray): Preprocessed image data ready for inference with shape (1, 3, height, width).
             (Tuple[int, int]): Padding values (top, left) applied during letterboxing.
         """
-        scale = 0.5  # 缩放比例：0.5表示降至原来的一半
-        if scale != 1.0:
-            img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
-    
         # 避免不必要的复制
         if img.shape[2] == 3:  # 确保是BGR格式
             # 使用更快的转换方法
@@ -786,7 +782,7 @@ def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Opt
 
         # Detect objects
         detections = detecor.detect(frame, confidence)
-
+        log_message(f"使用的模型输入尺寸为: {detecor.input_width}x{detecor.input_height}")
         # Draw detections
         result_frame = detecor.visualize_detections(frame, detections)
 
@@ -824,8 +820,11 @@ def detect_camera(camera_id=0, detecor: Optional[YOLOv8] = None, confidence: Opt
 
 
 if __name__ == "__main__":
+    # 控制是否显示UI界面的标志
+    display_ui = True  # 设置为False可禁用所有UI显示
 
-    camera = Camera(camera_id=2, resolution=(640, 480))
+    camera_id = 0  # 默认相机ID
+    camera = Camera(camera_id=camera_id, resolution=(640, 480))
     try:
         if camera.open():
             print("摄像头属性:", camera.get_properties())
@@ -841,9 +840,11 @@ if __name__ == "__main__":
     log_message(f"使用 {backend} 后端进行推理")
     
     try:
-        print(f"按 'q' 键退出，按 's' 键切换推理后端")
+        if display_ui:
+            print(f"按 'q' 键退出，按 's' 键切换推理后端")
+        
         current_backend = backend
-                # 在主循环中添加帧跳过策略
+        # 在主循环中添加帧跳过策略
         processing = False
         
         while True:
@@ -856,33 +857,43 @@ if __name__ == "__main__":
                 start_time = time.time()
                 detections = detector.detect(frame)
                 inference_time = (time.time() - start_time) * 1000
-                log_message(f"inf time{inference_time}")
-                # result_image = detector.visualize_detections(frame, detections)
                 
-                # # 显示推理时间和当前后端
-                # cv2.putText(result_image, f"Backend: {detector.backend}", (10, 30),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                # cv2.putText(result_image, f"Inference: {inference_time:.1f}ms", (10, 60),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # 检测结果显示在控制台（无论是否启用UI）
+                for detection in detections:
+                    class_name = detector.class_list[detection['class_id']]
+                    log_message(f"模型尺寸: {detector.input_width}x{detector.input_height}, "
+                        f"检测到: {class_name}, 置信度: {detection['score']:.2f}, "
+                              f"位置: {detection['box']}", level="info")
                 
-                # cv2.imshow("YOLOv8 Detection", result_image)
+                if display_ui:
+                    result_image = detector.visualize_detections(frame, detections)
+                    
+                    # 显示推理时间和当前后端
+                    cv2.putText(result_image, f"Backend: {detector.backend}", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(result_image, f"Inference: {inference_time:.1f}ms", (10, 60),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    
+                    cv2.imshow("YOLOv8 Detection", result_image)
+                
                 processing = False
                 
-            # # 确保UI响应，即使在处理帧
-            # key = cv2.waitKey(1) & 0xFF
-            # if key == ord('q'):
-            #     cv2.destroyAllWindows()
-            #     break
-            # elif key == ord('s'):
-            #     # 切换后端
-            #     new_backend = 'onnx' if detector.backend == 'openvino' else 'openvino'
-            #     log_message(f"切换后端从 {detector.backend} 到 {new_backend}")
-            #     detector = YOLOv8(backend=new_backend)
-
+            # 按键处理
+            if display_ui:
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    cv2.destroyAllWindows()
+                    break
+                elif key == ord('s'):
+                    # 切换后端
+                    new_backend = 'onnx' if detector.backend == 'openvino' else 'openvino'
+                    log_message(f"切换后端从 {detector.backend} 到 {new_backend}")
+                    detector = YOLOv8(backend=new_backend)
+            
             # # 捕获一张图像并保存
             # image = camera.read_frame()
             # if image is not None:
-            #     detections = detector.detect(frame)
+                #     detections = detector.detect(frame)
             #     result_image = detector.visualize_detections(frame, detections)
             #     save_path = "captured_image.jpg"
             #     cv2.imwrite(save_path, result_image)
@@ -902,17 +913,19 @@ if __name__ == "__main__":
             #     print(f"  第二批: {' -> '.join(mission['second_batch'])}")
             # else:
             #     print("未检测到有效的任务码")
-                
+
 
         # 关闭摄像头
         camera.close()
-        cv2.destroyAllWindows()
+        if display_ui:
+            cv2.destroyAllWindows()
 
     except KeyboardInterrupt as e:
         print("用户中断程序")
     finally:
         camera.close()
         log_message("摄像头关闭")
-        cv2.destroyAllWindows()
+        if display_ui:
+            cv2.destroyAllWindows()
         print("程序结束")
 
