@@ -19,7 +19,11 @@ sys.path.insert(0, str(project_root))
 
 
 positionFinish = False
-
+# 比例控制参数 (0.5~0.8)
+PROPORTIONAL_GAIN = 0.7
+# 最大调整尝试次数
+MAX_ATTEMPTS = 5  
+PIXEL_DISTANCE_RATIO_HEIGHT_0 = 5.4  # 像素到物理距离的比例系数，需要实际校准
 
 def initialize_cameras(config):
     """初始化摄像头"""
@@ -95,100 +99,6 @@ def data_received_callback(data):
             "Received position finish signal, positionFinish set to True")
 
 
-def adjust_position_to_target(target_class_id, detections, pixel_distance_ratio, vehicle=None, frame_size=(640, 480)):
-    """
-    根据检测结果调整位置，使目标对象位于画面中心位置（差距在±5像素以内）
-
-    Args:
-        target_class_id (int): 目标物体的类别ID
-        detections (List[Dict]): 检测结果列表
-        pixel_distance_ratio (float): 像素距离到实际距离的比例系数
-        vehicle (VehicleControl, optional): 用于控制车辆移动的对象
-        frame_size (Tuple[int, int]): 画面尺寸 (宽, 高)
-
-    Returns:
-        bool: 如果目标已经位于中心（±5像素内）返回True，否则返回False
-    """
-    # 画面中心点
-    center_x = frame_size[0] // 2
-    center_y = frame_size[1] // 2
-
-    # 像素误差容忍范围
-    tolerance = 5
-
-    # 寻找目标类别的物体
-    target_found = False
-    target_center_x = 0
-    target_center_y = 0
-
-    for detection in detections:
-        if detection['class_id'] == target_class_id:
-            # 获取边界框
-            box = detection['box']
-            x, y, w, h = box
-
-            # 计算物体中心点
-            target_center_x = x + w // 2
-            target_center_y = y + h // 2
-            target_found = True
-
-            # 记录最高置信度的目标（如果有多个相同类别）
-            break
-
-    if not target_found:
-        log_message(f"未找到目标类别 {target_class_id} 的物体")
-        return False
-
-    # 计算目标中心与画面中心的偏移量
-    delta_x = target_center_x - center_x
-    delta_y = target_center_y - center_y
-
-    log_message(
-        f"目标位置: ({target_center_x}, {target_center_y}), 中心位置: ({center_x}, {center_y})")
-    log_message(f"偏移量: x={delta_x}px, y={delta_y}px")
-
-    # 检查是否已经在容忍范围内
-    if abs(delta_x) <= tolerance and abs(delta_y) <= tolerance:
-        log_message("目标已经位于中心位置（±5像素范围内）")
-        return True
-
-    # 如果传入了车辆控制对象，计算实际距离并进行微调
-    if vehicle is not None:
-        # 将像素偏移转换为物理单位
-        real_x_offset = delta_x * pixel_distance_ratio
-        real_y_offset = delta_y * pixel_distance_ratio
-
-        # 注意：根据实际坐标系统调整正负号
-        # 假设: 画面 x+ 向右, y+ 向下, 车辆 x+ 向前, y+ 向左
-        move_x = -real_y_offset  # 垂直方向可能需要换成前进/后退
-        move_y = -real_x_offset  # 水平方向可能需要换成左/右移动
-
-        log_message(f"调整位置: x={move_x:.2f}, y={move_y:.2f}")
-
-        # 重置位置完成标志
-        global positionFinish
-        positionFinish = False
-
-        # 发送位置调整命令
-        vehicle.position_control(move_x, move_y, 0)  # 第三个参数是旋转角度，保持为0
-
-        # 等待位置调整完成
-        log_message("等待位置调整完成...")
-        timeout = 20  # 设置超时时间（秒）
-        start_time = time.time()
-
-        while not positionFinish:
-            time.sleep(0.1)
-            if time.time() - start_time > timeout:
-                log_message("位置调整超时", level="warning")
-                break
-
-        if positionFinish:
-            log_message("位置调整完成")
-            # 位置调整完成后，重新检测目标位置
-            return False  # 返回False以便在下一轮循环中重新检测位置
-
-    return False
 
 
 def move_and_wait_for_completion(vehicle, x, y, angle=0, timeout=20):
@@ -232,6 +142,7 @@ class State:
 
 # 具体状态类
 
+
 class TestState(State):
     def execute(self, context):
         log_message("执行 TestState: 测试状态")
@@ -241,8 +152,9 @@ class TestState(State):
         time.sleep(0.5)
         if move_and_wait_for_completion(vehicle=context.vehicle, x=0, y=-600, angle=0, timeout=30):
             log_message("测试状态1完成")
-            
+
         context.current_state = GrabAtRawMaterialState_Step4()
+
 
 class ActionGroup1State(State):
     def execute(self, context):
@@ -254,14 +166,15 @@ class ActionGroup1State(State):
 
         else:
             log_message("出库执行失败", level="error")
-        
+
         context.current_state = GrabAtRawMaterialState_Step4()
 
 
 class ScanState(State):
     def execute(self, context):
-        move_and_wait_for_completion(vehicle=context.vehicle, x=500, y=0, angle=0, timeout=15)
-        
+        move_and_wait_for_completion(
+            vehicle=context.vehicle, x=500, y=0, angle=0, timeout=15)
+
         mission = context.qr_detector.detect_from_camera(
             context.camera_front, display=False)
 
@@ -331,12 +244,13 @@ class GrabAtRawMaterialState_Step4(State):
             context.arm.arm_height_control(180)
             # 物体稳定性检测
             stable_detections = self.wait_for_stable_object(
-                context, color_info['class_id'],stability_threshold=2)
+                context, color_info['class_id'], stability_threshold=2)
 
             if stable_detections:
                 log_message(f"检测到稳定的 {color_info['name']} 物料，开始抓取")
                 # 使用占位函数执行抓取
-                grab(context=context, color=color_info['name'], platelist=grabbed_items)
+                control.grabAtRawArea(
+                    context=context, color=color_info['name'], platelist=grabbed_items)
                 grabbed_items.append(color_info['name'])
             else:
                 log_message(
@@ -432,45 +346,6 @@ class GrabAtRawMaterialState_Step4(State):
         log_message("物体位置稳定，准备抓取")
         return last_detection
 
-# 临时抓取函数，实际实现中需要替换为真正的抓取逻辑
-
-
-def grab(context,color, platelist):
-    """
-    原料区抓取函数
-
-    Args:
-        color (str): 要抓取的颜色
-        platelist (list): 已抓取物料列表
-    """
-    log_message(f"抓取 {color} 物料（占位函数）")
-    # 放下机械臂
-    context.arm.arm_height_control(370)
-    time.sleep(1.5)
-    # 夹爪闭合
-    context.arm.arm_grab_control(1)
-    time.sleep(0.8)
-    # 机械臂抬起
-    context.arm.arm_height_control(75)
-    time.sleep(1.5)
-    #机械臂旋转
-    context.arm.arm_rotate_control(1)
-    time.sleep(1)
-    # 夹爪打开
-    context.arm.arm_grab_control(0)
-    time.sleep(0.8)
-    # 机械臂抬起
-    context.arm.arm_height_control(20)
-    time.sleep(1)
-    # 机械臂旋转
-    context.arm.arm_rotate_control(0)
-    time.sleep(0.8)
-    # 转盘旋转
-    context.plate_angle+=120
-    context.arm.arm_plate_control(context.plate_angle)
-    
-    log_message(f"{color} 物料抓取完成")
-
 
 class MoveToRoughProcessingState_Step5(State):
     def execute(self, context):
@@ -485,9 +360,142 @@ class AdjustPositionWithRingState_Step6(State):
         if not context.scanned_data or len(context.scanned_data) < 3:
             log_message("扫描数据不完整，无法确定抓取顺序", level="error")
             return
-        
-        
+        # 尝试进行位置调整
+        attempts = 0
+        adjusted = False
+
+        while attempts < MAX_ATTEMPTS and not adjusted:
+            log_message(f"位置调整尝试 {attempts + 1}/{MAX_ATTEMPTS}")
+            
+            # 获取当前图像
+            frame = context.camera_down.read_frame()
+            if frame is None:
+                log_message("无法读取图像", level="error")
+                time.sleep(0.5)
+                attempts += 1
+                continue
+                
+            # 执行目标检测
+            detections = context.detector.detect(frame)
+            
+            # 显示检测结果（调试用）
+            detect_img = context.detector.draw_detections(frame.copy(), detections)
+            cv2.imshow("Position Adjustment", detect_img)
+            cv2.waitKey(1)
+            
+            # 根据检测结果调整位置
+            adjusted = adjust_position_to_target(
+                detections, 
+                PIXEL_DISTANCE_RATIO_HEIGHT_0,
+                vehicle=context.vehicle
+            )
+            
+            if adjusted:
+                log_message("位置调整成功")
+                time.sleep(1.0)  # 稳定等待
+                break
+                
+            attempts += 1
+            time.sleep(0.5)  # 短暂等待后重试
+
+        if not adjusted:
+            log_message("无法完成位置调整，继续执行后续步骤", level="warning")
+
+        cv2.destroyAllWindows()
         context.current_state = PlaceAtRoughProcessingState_Step7()
+
+
+def adjust_position_to_target(target_class_id=None, detections=None, pixel_distance_ratio=1.0, vehicle=None, 
+                              frame_size=(640, 480), target_position=None):
+    """
+    改进版：增加比例控制、迭代调整和容错机制
+    支持指定目标点位或默认使用画面中心点
+    支持不指定目标类别时自动选择离目标点最近的检测物体
+    
+    Args:
+        target_class_id: 目标物体的类别ID，不指定则选择最靠近目标点的物体
+        detections: 检测到的物体列表
+        pixel_distance_ratio: 像素距离到实际距离的转换比例
+        vehicle: 车辆控制对象
+        frame_size: 画面尺寸，默认(640, 480)
+        target_position: 可选的目标位置(x, y)，不指定则使用画面中心
+        
+    Returns:
+        bool: 调整完成返回True，否则返回False
+    """
+    # 检查是否有检测结果
+    if not detections:
+        log_message("没有检测到任何物体")
+        return False
+    
+    # 设置目标位置（指定位置或画面中心）
+    if target_position is None:
+        # 画面中心点
+        target_x = frame_size[0] // 2
+        target_y = frame_size[1] // 2
+    else:
+        target_x, target_y = target_position
+    
+    tolerance = 5  # 像素误差容忍范围
+
+    # 如果没有指定目标类别ID，选择离目标点最近的物体
+    if target_class_id is None:
+        min_distance = float('inf')
+        target = None
+        
+        for detection in detections:
+            x, y, w, h = detection['box']
+            center_x = x + w//2
+            center_y = y + h//2
+            
+            # 计算到目标点的距离
+            distance = ((center_x - target_x) ** 2 + (center_y - target_y) ** 2) ** 0.5
+            
+            if distance < min_distance:
+                min_distance = distance
+                target = detection
+                
+        if not target:
+            log_message("未找到合适的目标物体")
+            return False
+            
+        log_message(f"自动选择了离目标点最近的物体 (类别ID: {target['class_id']})")
+    else:
+        # 按指定类别ID寻找目标物体
+        target = next((d for d in detections if d['class_id'] == target_class_id), None)
+        if not target:
+            log_message(f"目标 {target_class_id} 未检测到")
+            return False
+
+    # 计算目标中心
+    x, y, w, h = target['box']
+    target_center = (x + w//2, y + h//2)
+    delta_x = target_center[0] - target_x
+    delta_y = target_center[1] - target_y
+
+    # 检查是否满足条件
+    if abs(delta_x) <= tolerance and abs(delta_y) <= tolerance:
+        log_message("目标已到达指定位置")
+        return True
+
+    # 渐进式调整逻辑
+    if vehicle:
+        # 计算带比例系数的物理偏移量
+        real_x = delta_x * pixel_distance_ratio * PROPORTIONAL_GAIN
+        real_y = delta_y * pixel_distance_ratio * PROPORTIONAL_GAIN
+
+        # 运动方向映射（根据实际坐标系调整）
+        move_x = -real_y  # 前后移动量（假设y轴对应深度方向）
+        move_y = -real_x  # 左右移动量
+
+        # 执行渐进式移动
+        log_message(f"渐进调整: X={move_x:.2f}, Y={move_y:.2f}")
+        vehicle.position_control(move_y, move_x, 0)  # 注意参数顺序可能需要调整
+        
+        # 添加稳定等待时间（根据实际运动速度调整）
+        time.sleep(1)  # 示例值，需实际测试调整
+
+    return False  # 需要继续调整
 
 
 class PlaceAtRoughProcessingState_Step7(State):
@@ -595,7 +603,7 @@ class RobotContext:
 
     def run(self):
         self.arm.arm_plate_control(self.plate_angle)
-        
+
         while self.current_state is not None:
             self.current_state.execute(self)
 
@@ -620,7 +628,7 @@ def main():
 
     # 初始化车辆和机械臂控制器
     vehicle, arm = initialize_controllers(config, serial_comm)
-    
+
     # 初始化游戏控制器
     controller = control.PyGameController(vehicle, arm)
     controller.set_vehicle_control(vehicle)
@@ -628,7 +636,54 @@ def main():
 
     detector = detect.YOLOv8(backend="openvino")
     qr_detector = detect.QrCodeDetector()
-
+    # 增加连续位置调整的测试功能
+    log_message("开始连续位置调整测试...")
+    
+    try:
+        # 确保摄像头已打开
+        if not cam_down or not cam_down.is_open():
+            log_message("底部摄像头未打开，无法执行位置调整", level="error")
+        else:
+            # 设置调整参数
+            target_class_id = None  # 不指定类别ID，选择最近的目标
+            adjustment_running = True
+            
+            log_message("开始连续位置调整，按ESC键停止...")
+            
+            while adjustment_running:
+                # 读取当前帧
+                frame = cam_down.read_frame()
+                if frame is None:
+                    log_message("无法读取图像帧", level="warning")
+                    continue
+                
+                # 执行目标检测
+                detections = detector.detect(frame)
+                
+                # 显示检测结果
+                detect_img = detector.draw_detections(frame.copy(), detections)
+                cv2.imshow("Continuous Position Adjustment", detect_img)
+                
+                # 执行位置调整
+                adjust_position_to_target(
+                    target_class_id=target_class_id,
+                    detections=detections,
+                    pixel_distance_ratio=PIXEL_DISTANCE_RATIO_HEIGHT_0,
+                    vehicle=vehicle
+                )
+                
+                # 检查是否按下ESC键退出
+                key = cv2.waitKey(10)
+                if key == 27:  # ESC键
+                    log_message("用户中断位置调整")
+                    adjustment_running = False
+            
+            cv2.destroyAllWindows()
+            
+    except Exception as e:
+        log_message(f"连续位置调整异常: {e}", level="error")
+        cv2.destroyAllWindows()
+    
     context = RobotContext(vehicle, arm, serial_comm, detector,
                            qr_detector, camera_front=cam_front, camera_down=cam_down)
     context.run()

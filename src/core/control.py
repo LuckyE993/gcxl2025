@@ -429,6 +429,136 @@ class ArmControl:
             return False
 
 
+def grabAtRawArea(context,color):
+    """
+    原料区抓取函数
+
+    Args:
+        color (str): 要抓取的颜色
+    """
+    log_message(f"抓取 {color} 物料（占位函数）")
+    # 放下机械臂
+    context.arm.arm_height_control(370)
+    time.sleep(1.5)
+    # 夹爪闭合
+    context.arm.arm_grab_control(1)
+    time.sleep(0.8)
+    # 机械臂抬起
+    context.arm.arm_height_control(75)
+    time.sleep(1.5)
+    #机械臂旋转
+    context.arm.arm_rotate_control(1)
+    time.sleep(1)
+    # 夹爪打开
+    context.arm.arm_grab_control(0)
+    time.sleep(0.8)
+    # 机械臂抬起
+    context.arm.arm_height_control(20)
+    time.sleep(1)
+    # 机械臂旋转
+    context.arm.arm_rotate_control(0)
+    time.sleep(0.8)
+    # 转盘旋转
+    context.plate_angle+=120
+    context.arm.arm_plate_control(context.plate_angle)
+    
+    log_message(f"{color} 物料抓取完成")
+    
+def adjust_position_to_target(target_class_id, detections, pixel_distance_ratio, vehicle=None, frame_size=(640, 480)):
+    """
+    根据检测结果调整位置，使目标对象位于画面中心位置（差距在±5像素以内）
+
+    Args:
+        target_class_id (int): 目标物体的类别ID
+        detections (List[Dict]): 检测结果列表
+        pixel_distance_ratio (float): 像素距离到实际距离的比例系数
+        vehicle (VehicleControl, optional): 用于控制车辆移动的对象
+        frame_size (Tuple[int, int]): 画面尺寸 (宽, 高)
+
+    Returns:
+        bool: 如果目标已经位于中心（±5像素内）返回True，否则返回False
+    """
+    # 画面中心点
+    center_x = frame_size[0] // 2
+    center_y = frame_size[1] // 2
+
+    # 像素误差容忍范围
+    tolerance = 5
+
+    # 寻找目标类别的物体
+    target_found = False
+    target_center_x = 0
+    target_center_y = 0
+
+    for detection in detections:
+        if detection['class_id'] == target_class_id:
+            # 获取边界框
+            box = detection['box']
+            x, y, w, h = box
+
+            # 计算物体中心点
+            target_center_x = x + w // 2
+            target_center_y = y + h // 2
+            target_found = True
+
+            # 记录最高置信度的目标（如果有多个相同类别）
+            break
+
+    if not target_found:
+        log_message(f"未找到目标类别 {target_class_id} 的物体")
+        return False
+
+    # 计算目标中心与画面中心的偏移量
+    delta_x = target_center_x - center_x
+    delta_y = target_center_y - center_y
+
+    log_message(
+        f"目标位置: ({target_center_x}, {target_center_y}), 中心位置: ({center_x}, {center_y})")
+    log_message(f"偏移量: x={delta_x}px, y={delta_y}px")
+
+    # 检查是否已经在容忍范围内
+    if abs(delta_x) <= tolerance and abs(delta_y) <= tolerance:
+        log_message("目标已经位于中心位置（±5像素范围内）")
+        return True
+
+    # 如果传入了车辆控制对象，计算实际距离并进行微调
+    if vehicle is not None:
+        # 将像素偏移转换为物理单位
+        real_x_offset = delta_x * pixel_distance_ratio
+        real_y_offset = delta_y * pixel_distance_ratio
+
+        # 注意：根据实际坐标系统调整正负号
+        # 假设: 画面 x+ 向右, y+ 向下, 车辆 x+ 向前, y+ 向左
+        move_x = -real_y_offset  # 垂直方向可能需要换成前进/后退
+        move_y = -real_x_offset  # 水平方向可能需要换成左/右移动
+
+        log_message(f"调整位置: x={move_x:.2f}, y={move_y:.2f}")
+
+        # 重置位置完成标志
+        global positionFinish
+        positionFinish = False
+
+        # 发送位置调整命令
+        vehicle.position_control(move_x, move_y, 0)  # 第三个参数是旋转角度，保持为0
+
+        # 等待位置调整完成
+        log_message("等待位置调整完成...")
+        timeout = 20  # 设置超时时间（秒）
+        start_time = time.time()
+
+        while not positionFinish:
+            time.sleep(0.1)
+            if time.time() - start_time > timeout:
+                log_message("位置调整超时", level="warning")
+                break
+
+        if positionFinish:
+            log_message("位置调整完成")
+            # 位置调整完成后，重新检测目标位置
+            return False  # 返回False以便在下一轮循环中重新检测位置
+
+    return False
+
 class PyGameController:
     def __init__(self, vehicle_control=None, arm_control=None):
         """Initialize PyGame controller

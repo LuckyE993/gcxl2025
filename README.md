@@ -23,5 +23,5 @@ yolo val model=path/to/best.pt data="D:\YOLO\ultralytics\datasets\0414-2\data.ya
 ```
 .onnx模型验证
 ``` bash
-yolo val task=detect model=runs\detect\0422-320\weights\best.onnx imgsz=320 data=D:\YOLO\ultralytics\datasets\0414-2\data.yaml
+yolo val task=detect model="D:\YOLO\ultralytics\runs\detect\train\weights\best.pt" imgsz=320 data=D:\YOLO\ultralytics\datasets\0414-2\data.yaml
 ```

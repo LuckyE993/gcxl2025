@@ -1,7 +1,7 @@
 {
     "model": {
-        "path": "models/0422-160/weights/best.onnx",
-        "openvino-int8":"models/0422-160/weights/best_int8_openvino_model",
+        "path": "models/0423-160/weights/best.onnx",
+        "openvino-int8":"models/0423-160/weights/best_int8_openvino_model",
         "classes": {
             "0": "circle_blue",
             "1": "circle_green",
