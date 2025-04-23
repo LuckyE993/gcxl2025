@@ -823,7 +823,7 @@ if __name__ == "__main__":
     # 控制是否显示UI界面的标志
     display_ui = True  # 设置为False可禁用所有UI显示
 
-    camera_id = 0  # 默认相机ID
+    camera_id = 10  # 默认相机ID
     camera = Camera(camera_id=camera_id, resolution=(640, 480))
     try:
         if camera.open():
@@ -834,7 +834,7 @@ if __name__ == "__main__":
 
     # 使用不同的后端初始化检测器
     # 选择 'onnx' 或 'openvino' 作为后端
-    backend = 'openvino'  # 可以改为 'onnx'
+    backend = 'onnx'  # 可以改为 'onnx'
     
     detector = YOLOv8(backend=backend)
     log_message(f"使用 {backend} 后端进行推理")
@@ -873,7 +873,36 @@ if __name__ == "__main__":
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     cv2.putText(result_image, f"Inference: {inference_time:.1f}ms", (10, 60),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    
+                    # 绘制图像中心点
+                    img_h, img_w = result_image.shape[:2]
+                    img_center = (img_w // 2, img_h // 2)
+                    cv2.circle(result_image, img_center, 10, (255, 0, 255), -1)  # 紫色填充圆圈表示图像中心
+                    cv2.circle(result_image, img_center, 12, (255, 255, 255), 2)  # 白色边框
+                    cv2.putText(result_image, "Image Center", (img_center[0] + 15, img_center[1]),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+                    # 绘制每个检测框的中心点
+                    for detection in detections:
+                        box = detection['box']
+                        x, y, w, h = box
+                        box_center = (int(x + w / 2), int(y + h / 2))
+                        
+                        # 绘制检测框中心点（黄色）
+                        cv2.circle(result_image, box_center, 6, (0, 255, 255), -1)  # 黄色填充圆圈
+                        cv2.circle(result_image, box_center, 8, (0, 0, 0), 2)  # 黑色边框
+                        
+                        # 连接图像中心和检测框中心
+                        cv2.line(result_image, img_center, box_center, (0, 200, 200), 2)
+                        
+                        # 计算距离
+                        distance = ((box_center[0] - img_center[0]) ** 2 + 
+                                   (box_center[1] - img_center[1]) ** 2) ** 0.5
+                        
+                        # 在检测框中心附近显示到图像中心的距离
+                        dist_text = f"d={int(distance)}px"
+                        cv2.putText(result_image, dist_text, 
+                                   (box_center[0] + 10, box_center[1] + 10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                     cv2.imshow("YOLOv8 Detection", result_image)
                 
                 processing = False

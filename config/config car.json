@@ -1,6 +1,6 @@
 {
     "model": {
-        "path": "models/0414-model2/train/weights/best.onnx",
+        "path": "models/0423-160/weights/best.onnx",
         "openvino-int8":"models/0414-model2/train/weights/best_int8_openvino_model",
         "classes": {
             "0": "circle_blue",
@@ -18,8 +18,8 @@
         }
     },
     "camera": {
-        "camera_id_front": 0,
-        "camera_id_down": 2,
+        "camera_id_front": 12,
+        "camera_id_down": 10,
         "resolution": {
             "width": 640,
             "height": 480
