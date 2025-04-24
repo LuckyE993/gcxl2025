@@ -14,7 +14,7 @@ DEFAULT_CONFIG = {
 def get_config_path():
     """获取配置文件路径"""
     config_dir = os.environ.get("CONFIG_DIR", "config")
-    return Path(config_dir) / "config.json"
+    return Path(config_dir) / "config car.json"
 
 def get_config():
     """加载配置"""

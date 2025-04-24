@@ -1,7 +1,7 @@
 {
     "model": {
         "path": "models/0423-160/weights/best.onnx",
-        "openvino-int8":"models/0414-model2/train/weights/best_int8_openvino_model",
+        "openvino-int8": "models/0414-model2/train/weights/best_int8_openvino_model",
         "classes": {
             "0": "circle_blue",
             "1": "circle_green",
@@ -18,15 +18,15 @@
         }
     },
     "camera": {
-        "camera_id_front": 12,
-        "camera_id_down": 10,
+        "camera_id_front": 10,
+        "camera_id_down": 12,
         "resolution": {
             "width": 640,
             "height": 480
         }
     },
     "communication": {
-        "com": "/dev/ttyACM0",
+        "com": "/dev/ttyS4",
         "baudrate": 115200,
         "timeout": 1
     },
@@ -37,5 +37,50 @@
     "arm": {
         "max_height": 425,
         "rotate_max_height": 250
+    },
+    "controller": {
+        "platform": "debian10",
+        "ubuntu": {
+            "left_trigger":2,
+            "right_trigger": 5,
+            "left_stick_x": 1,
+            "left_stick_y": 0,
+            "right_stick_x": 3,
+            "right_stick_y": 4,
+            "left_bumper": 4,
+            "right_bumper": 5,
+            "a_button": 0,
+            "b_button": 1,
+            "x_button": 3,
+            "y_button": 2
+        },
+        "debian10": {
+            "left_trigger": 3,
+            "right_trigger": 4,
+            "left_stick_x": 0,
+            "left_stick_y": 1,
+            "right_stick_x": 2,
+            "right_stick_y": 5,
+            "left_bumper": 4,
+            "right_bumper": 5,
+            "a_button": 1,
+            "b_button": 2,
+            "x_button": 3,
+            "y_button": 0
+        },
+        "win":{
+            "left_trigger": 4,
+            "right_trigger": 5,
+            "left_stick_x": 1,
+            "left_stick_y": 0,
+            "right_stick_x": 2,
+            "right_stick_y": 3,
+            "left_bumper": 9,
+            "right_bumper": 10,
+            "a_button": 0,
+            "b_button": 1,
+            "x_button": 2,
+            "y_button": 3
+        }
     }
 }

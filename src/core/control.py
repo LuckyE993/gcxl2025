@@ -587,8 +587,57 @@ class PyGameController:
         self.max_speed = 1000  # 最大速度 mm/s
         self.max_rotation = 180  # 最大旋转速度 deg/s
 
+        # 根据平台设置按钮和轴映射
+        self._setup_platform_mappings()
+
         # 初始化可用的手柄
         self._init_joysticks()
+        
+    def _setup_platform_mappings(self):
+        """根据配置文件设置控制器映射关系"""
+        from src.config import settings
+        
+        # 获取配置
+        config = settings.get_config()
+        controller_config = config.get("controller", {})
+        
+        # 获取平台名称，默认为系统平台名称
+        platform = controller_config.get("platform", None)
+        
+        # 如果配置中没有指定平台，则根据系统自动判断
+        if not platform:
+            import sys
+            if sys.platform.startswith('win'):
+                platform = "win"
+            else:
+                platform = "ubuntu"  # 默认使用Ubuntu映射
+        
+        # 获取对应平台的映射配置
+        platform_config = controller_config.get(platform, {})
+        
+        log_message(f"使用'{platform}'平台的控制器映射配置")
+        
+        # 设置轴映射
+        self.axis_map = {
+            "lx": platform_config.get("left_stick_x", 1),
+            "ly": platform_config.get("left_stick_y", 0),
+            "rx": platform_config.get("right_stick_x", 3 if platform != "win" else 2),
+            "lt": platform_config.get("left_trigger", 2 if platform != "win" else 4),
+            "rt": platform_config.get("right_trigger", 5)
+        }
+        
+        # 设置按钮映射
+        self.button_map = {
+            "forward": platform_config.get("left_bumper", 4 if platform != "win" else 9),
+            "backward": platform_config.get("right_bumper", 5 if platform != "win" else 10),
+            "grab": platform_config.get("a_button", 0),
+            "plate": platform_config.get("x_button", 2 if platform == "ubuntu" else 3),
+            "mode": platform_config.get("y_button", 3 if platform == "ubuntu" else 2),
+            "mode_back": platform_config.get("b_button", 1)
+        }
+        
+        log_message(f"控制器轴映射: {self.axis_map}")
+        log_message(f"控制器按钮映射: {self.button_map}")
 
     def _init_joysticks(self):
         """初始化所有可用的手柄"""
@@ -673,43 +722,24 @@ class PyGameController:
 
             try:
                 # 检测模式切换按钮
-                # Button2 - 进入机械臂控制模式
                 if not self.arm:
                     return
-        
-                import sys
-                # 平台自适应扳机轴映射
-                if sys.platform.startswith('win'):
-                    left_trigger_axis = 4
-                    right_trigger_axis = 5
-                    backward_button = 9
-                    forward_button = 10
-                    grab_button = 0
-                    plate_button = 3
-                    mode_button = 2
-                else:
-                    left_trigger_axis = 2
-                    right_trigger_axis = 5
-                    backward_button = 4
-                    forward_button = 5
-                    grab_button = 0
-                    plate_button = 2
-                    mode_button = 3
-                button2_pressed = self.active_joystick.get_button(mode_button)
-                if button2_pressed and not button_states.get("button2", False) and not self.arm_control_mode:
+    
+                mode_button_pressed = self.active_joystick.get_button(self.button_map["mode"])
+                if mode_button_pressed and not button_states.get("mode_button", False) and not self.arm_control_mode:
                     if self.arm:
                         self.arm_control_mode = True
                         log_message("已切换到机械臂控制模式")
                     else:
                         log_message("未设置机械臂控制对象，无法切换到机械臂控制模式", level="warning")
-                button_states["button2"] = button2_pressed
+                button_states["mode_button"] = mode_button_pressed
 
-                # Button1 - 退出机械臂控制模式
-                button1_pressed = self.active_joystick.get_button(1)
-                if button1_pressed and not button_states.get("button1", False) and self.arm_control_mode:
+                # mode_back_button - 退出机械臂控制模式
+                mode_back_button_pressed = self.active_joystick.get_button(self.button_map["mode_back"])
+                if mode_back_button_pressed and not button_states.get("mode_back_button", False) and self.arm_control_mode:
                     self.arm_control_mode = False
                     log_message("已切换回底盘控制模式")
-                button_states["button1"] = button1_pressed
+                button_states["mode_back_button"] = mode_back_button_pressed
 
                 if self.arm_control_mode:
                     # 机械臂控制模式
@@ -722,149 +752,105 @@ class PyGameController:
                 log_message(f"控制器处理异常: {str(e)}", level="error")
 
             # 控制循环频率
-            clock.tick(15)  # 20Hz
+            clock.tick(15)  # 15Hz
 
     def _handle_vehicle_control(self):
         """处理底盘控制逻辑"""
         if not self.vehicle:
             return
-        import sys
-
-        if sys.platform.startswith('win'):
-            # Windows 映射
-            axis_map = {
-                "lx": 1, "ly": 0, "rx": 2, "lt": 4, "rt": 5
-            }
-        else:
-            # Ubuntu 映射
-            axis_map = {
-                "lx": 1, "ly": 0, "rx": 3, "lt": 2, "rt": 5
-            }
-
-        steer_dir_x = self.active_joystick.get_axis(axis_map["lx"])*-1
-        steer_dir_y = self.active_joystick.get_axis(axis_map["ly"])*-1
-        steer_rotation_x = self.active_joystick.get_axis(axis_map["rx"])*-1
-        left_trigger = self.active_joystick.get_axis(axis_map["lt"])
-        right_trigger = self.active_joystick.get_axis(axis_map["rt"])
-        # # 左摇杆控制方向 (axis 0 是x轴，axis 1是y轴)
-        # steer_dir_x = self.active_joystick.get_axis(1) * -1
-        # steer_dir_y = self.active_joystick.get_axis(0) * -1
-
-        # # 右摇杆控制旋转 (axis 2是x轴，axis 3是y轴)
-        # steer_rotation_x = self.active_joystick.get_axis(2) * -1
-
-        # # 扳机控制油门 (axis 4是左扳机，axis 5是右扳机)
-        # left_trigger = self.active_joystick.get_axis(4)  # 范围从-1到1，未按时为-1
-        # right_trigger = self.active_joystick.get_axis(5)  # 范围从-1到1，未按时为-1
-
+        # 底盘设置xy与手柄相反    
+        steer_dir_y = self.active_joystick.get_axis(self.axis_map["lx"])*-1
+        steer_dir_x = self.active_joystick.get_axis(self.axis_map["ly"])*-1
+        steer_rotation_x = self.active_joystick.get_axis(self.axis_map["rx"])*-1
+        left_trigger = self.active_joystick.get_axis(self.axis_map["lt"])
+        right_trigger = self.active_joystick.get_axis(self.axis_map["rt"])
+    
         # 应用死区
         steer_dir_x = 0 if abs(steer_dir_x) < self.deadzone else steer_dir_x
         steer_dir_y = 0 if abs(steer_dir_y) < self.deadzone else steer_dir_y
-        steer_rotation_x = 0 if abs(
-            steer_rotation_x) < self.deadzone else steer_rotation_x
-
+        steer_rotation_x = 0 if abs(steer_rotation_x) < self.deadzone else steer_rotation_x
+    
         # 计算运动控制值
         # 将扳机值从[-1,1]映射到[0,1]
         left_power = ((left_trigger + 1) / 2) * -1
         right_power = (right_trigger + 1) / 2
-
+    
         vx = steer_dir_x * (left_power+right_power) * self.max_speed  # 前进速度
         vy = steer_dir_y * (left_power+right_power) * self.max_speed  # 侧向速度
-        vyaw = steer_rotation_x * \
-            (left_power+right_power) * self.max_rotation  # 旋转速度
-
-        log_message(f"left trigger: {left_power}, right trigger: {right_power}")
-        # # 发送控制命令
+        vyaw = steer_rotation_x * (left_power+right_power) * self.max_rotation  # 旋转速度
+    
+        # 发送控制命令
         self.vehicle.velocity_control(int(vx), int(vy), int(vyaw))
 
     def _handle_arm_control(self, button_states):
-            """处理机械臂控制逻辑
-    
-            Args:
-                button_states (dict): 按钮状态字典，用于防止重复触发
-            """
-            if not self.arm:
-                return
-    
-            import sys
-            # 平台自适应扳机轴映射
-            if sys.platform.startswith('win'):
-                left_trigger_axis = 4
-                right_trigger_axis = 5
-                backward_button = 9
-                forward_button = 10
-                grab_button = 0
-                plate_button = 3
-            else:
-                left_trigger_axis = 2
-                right_trigger_axis = 5
-                backward_button = 4
-                forward_button = 5
-                grab_button = 0
-                plate_button = 2
-    
-            # 左右扳机控制机械臂高度
-            left_trigger = self.active_joystick.get_axis(left_trigger_axis)  # 范围从-1到1
-            right_trigger = self.active_joystick.get_axis(right_trigger_axis)  # 范围从-1到1
-    
-            # 将扳机值从[-1,1]映射到[0,1]
-            left_power = (left_trigger + 1) / 2
-            right_power = (right_trigger + 1) / 2
-    
-            # 只有当扳机值大于0.2才触发高度变化，防止误触
-            if left_power > 0.2:
-                # 左扳机下降
-                new_height = max(0, self.arm.arm_height -
-                                 self.arm_height_increment)
-                if new_height != self.arm.arm_height:
-                    log_message(f"机械臂高度下降: {self.arm.arm_height} -> {new_height}")
-                    self.arm.arm_height_control(new_height)
-    
-            if right_power > 0.2:
-                # 右扳机上升
-                new_height = min(self.arm.max_height,
-                                 self.arm.arm_height + self.arm_height_increment)
-                if new_height != self.arm.arm_height:
-                    log_message(f"机械臂高度上升: {self.arm.arm_height} -> {new_height}")
-                    self.arm.arm_height_control(new_height)
-    
-            # 控制旋转盘旋转120°
-            plate_rotate_pressed = self.active_joystick.get_button(plate_button)
-            if plate_rotate_pressed and not button_states.get("plate_rotate", False):
-                # 计算新的角度值（当前角度加上120°，并取模确保在0-359范围内）
-                new_angle = (self.arm.arm_plate_angle + 120) % 360
-                log_message(f"旋转盘旋转: {self.arm.arm_plate_angle}° -> {new_angle}°")
-                self.arm.arm_plate_control(new_angle)
-            button_states["plate_rotate"] = plate_rotate_pressed
-    
-            # 控制机械臂旋转方向
-            forward_pressed = self.active_joystick.get_button(forward_button)
-            backward_pressed = self.active_joystick.get_button(backward_button)
-    
-            # 确保按钮状态有记录，防止第一次触发错误
-            if "forward" not in button_states:
-                button_states["forward"] = False
-            if "backward" not in button_states:
-                button_states["backward"] = False
-    
-            if forward_pressed and not button_states.get("forward", False):
-                # 机械臂朝后
-                self.arm.arm_rotate_control(1)
-            button_states["forward"] = forward_pressed
-    
-            if backward_pressed and not button_states.get("backward", False):
-                # 机械臂朝前
-                self.arm.arm_rotate_control(0)
-            button_states["backward"] = backward_pressed
-    
-            # 控制夹爪抓取或松开（切换状态）
-            grab_pressed = self.active_joystick.get_button(grab_button)
-            if grab_pressed and not button_states.get("grab", False):
-                # 切换夹爪状态
-                self.arm_grab_state = 1 if self.arm_grab_state == 0 else 0
-                self.arm.arm_grab_control(self.arm_grab_state)
-                log_message(f"夹爪状态: {'闭合' if self.arm_grab_state == 1 else '打开'}")
-            button_states["grab"] = grab_pressed
+        """处理机械臂控制逻辑
+
+        Args:
+            button_states (dict): 按钮状态字典，用于防止重复触发
+        """
+        if not self.arm:
+            return
+
+        # 左右扳机控制机械臂高度
+        left_trigger = self.active_joystick.get_axis(self.axis_map["lt"])  # 范围从-1到1
+        right_trigger = self.active_joystick.get_axis(self.axis_map["rt"])  # 范围从-1到1
+
+        # 将扳机值从[-1,1]映射到[0,1]
+        left_power = (left_trigger + 1) / 2
+        right_power = (right_trigger + 1) / 2
+
+        # 只有当扳机值大于0.2才触发高度变化，防止误触
+        if left_power > 0.2:
+            # 左扳机下降
+            new_height = max(0, self.arm.arm_height - self.arm_height_increment)
+            if new_height != self.arm.arm_height:
+                log_message(f"机械臂高度下降: {self.arm.arm_height} -> {new_height}")
+                self.arm.arm_height_control(new_height)
+
+        if right_power > 0.2:
+            # 右扳机上升
+            new_height = min(self.arm.max_height, self.arm.arm_height + self.arm_height_increment)
+            if new_height != self.arm.arm_height:
+                log_message(f"机械臂高度上升: {self.arm.arm_height} -> {new_height}")
+                self.arm.arm_height_control(new_height)
+
+        # 控制旋转盘旋转120°
+        plate_rotate_pressed = self.active_joystick.get_button(self.button_map["plate"])
+        if plate_rotate_pressed and not button_states.get("plate_rotate", False):
+            # 计算新的角度值（当前角度加上120°，并取模确保在0-359范围内）
+            new_angle = (self.arm.arm_plate_angle + 120) % 360
+            log_message(f"旋转盘旋转: {self.arm.arm_plate_angle}° -> {new_angle}°")
+            self.arm.arm_plate_control(new_angle)
+        button_states["plate_rotate"] = plate_rotate_pressed
+
+        # 控制机械臂旋转方向
+        forward_pressed = self.active_joystick.get_button(self.button_map["forward"])
+        backward_pressed = self.active_joystick.get_button(self.button_map["backward"])
+
+        # 确保按钮状态有记录，防止第一次触发错误
+        if "forward" not in button_states:
+            button_states["forward"] = False
+        if "backward" not in button_states:
+            button_states["backward"] = False
+
+        if forward_pressed and not button_states.get("forward", False):
+            # 机械臂朝后
+            self.arm.arm_rotate_control(1)
+        button_states["forward"] = forward_pressed
+
+        if backward_pressed and not button_states.get("backward", False):
+            # 机械臂朝前
+            self.arm.arm_rotate_control(0)
+        button_states["backward"] = backward_pressed
+
+        # 控制夹爪抓取或松开（切换状态）
+        grab_pressed = self.active_joystick.get_button(self.button_map["grab"])
+        if grab_pressed and not button_states.get("grab", False):
+            # 切换夹爪状态
+            self.arm_grab_state = 1 if self.arm_grab_state == 0 else 0
+            self.arm.arm_grab_control(self.arm_grab_state)
+            log_message(f"夹爪状态: {'闭合' if self.arm_grab_state == 1 else '打开'}")
+        button_states["grab"] = grab_pressed
 
 
 def keyboard_test(vehicle: VehicleControl):

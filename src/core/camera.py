@@ -4,6 +4,14 @@ import time
 from typing import Optional, Tuple, Dict, List, Union, Any
 import sys
 from pathlib import Path
+# Add to the imports at the top of your file
+import threading
+
+# Define a global variable for the camera reading thread
+camera_thread = None
+camera_thread_running = False
+latest_frame = None
+frame_lock = threading.Lock()
 
 # 将项目根目录添加到Python路径
 project_root = Path(__file__).resolve().parents[2]
@@ -270,6 +278,60 @@ def convert_bgr_to_rgb(image: np.ndarray) -> np.ndarray:
     """
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+def camera_read_thread_function(camera):
+    """Dedicated thread function for continuously reading frames from camera"""
+    global latest_frame, camera_thread_running
+    
+    log_message(f"Camera reading thread started for camera ID: {camera.camera_id}")
+    
+    while camera_thread_running:
+        if not camera or not camera.is_open:
+            time.sleep(0.1)
+            continue
+            
+        frame = camera.read_frame()
+        if frame is not None:
+            with frame_lock:
+                latest_frame = frame.copy()
+        
+        # Add a small delay to prevent excessive CPU usage
+        time.sleep(0.01)
+    
+    log_message("Camera reading thread stopped")
+
+def start_camera_thread(camera):
+    """Start the dedicated camera reading thread"""
+    global camera_thread, camera_thread_running
+    
+    if camera_thread is not None and camera_thread.is_alive():
+        log_message("Camera thread is already running")
+        return
+    
+    camera_thread_running = True
+    camera_thread = threading.Thread(target=camera_read_thread_function, args=(camera,), daemon=True)
+    camera_thread.start()
+    log_message("Started camera reading thread")
+
+def stop_camera_thread():
+    """Stop the camera reading thread"""
+    global camera_thread, camera_thread_running
+    
+    if camera_thread is None:
+        return
+        
+    camera_thread_running = False
+    if camera_thread.is_alive():
+        camera_thread.join(timeout=1.0)  # Wait up to 1 second for thread to terminate
+    
+    camera_thread = None
+    log_message("Stopped camera reading thread")
+
+def get_latest_frame():
+    """Get the latest frame captured by the camera thread"""
+    with frame_lock:
+        if latest_frame is not None:
+            return latest_frame.copy()
+    return None
 
 # 测试代码
 if __name__ == "__main__":
@@ -278,19 +340,19 @@ if __name__ == "__main__":
     # print(f"可用摄像头: {available_cameras}")
     
     # 创建并测试摄像头
-    camera = Camera(camera_id = 1, resolution=(640, 480))
+    camera = Camera(camera_id = 12, resolution=(640, 480))
     if camera.open():
         print("摄像头属性:", camera.get_properties())
-        
+        start_camera_thread(camera)
         # 读取并显示3秒视频流
         start_time = time.time()
         while True:
-            frame = camera.read_frame()
+            frame = get_latest_frame()
             if frame is not None:
                 cv2.imshow("Camera Test", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
-        
+        stop_camera_thread()
         # 捕获一张图像并保存
         image = capture_image(camera)
         if image is not None:

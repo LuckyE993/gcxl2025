@@ -23,7 +23,7 @@ positionFinish = False
 PROPORTIONAL_GAIN = 0.7
 # 最大调整尝试次数
 MAX_ATTEMPTS = 5  
-PIXEL_DISTANCE_RATIO_HEIGHT_0 = 5.4  # 像素到物理距离的比例系数，需要实际校准
+PIXEL_DISTANCE_RATIO_HEIGHT_0 = 0.5  # 像素到物理距离的比例系数，需要实际校准
 
 def initialize_cameras(config):
     """初始化摄像头"""
@@ -32,6 +32,7 @@ def initialize_cameras(config):
     cam_down = camera.Camera(config["camera"]["camera_id_down"], (640, 480))
 
     try:
+        # Initialize front camera
         if cam_front.open():
             log_message(f"cam_front properties: {cam_front.get_properties()}")
         else:
@@ -43,7 +44,7 @@ def initialize_cameras(config):
             log_message("无法打开底部摄像头", level="warning")
 
     except Exception as e:
-        log_message(f"Camera open failed: {e}", level="error")
+        log_message(f"摄像头初始化异常: {e}", level="error")
         return None, None
 
     return cam_front, cam_down
@@ -485,15 +486,15 @@ def adjust_position_to_target(target_class_id=None, detections=None, pixel_dista
         real_y = delta_y * pixel_distance_ratio * PROPORTIONAL_GAIN
 
         # 运动方向映射（根据实际坐标系调整）
-        move_x = -real_y  # 前后移动量（假设y轴对应深度方向）
-        move_y = -real_x  # 左右移动量
+        move_x = -real_x  # 前后移动量（假设y轴对应深度方向）
+        move_y = -real_y  # 左右移动量
 
         # 执行渐进式移动
         log_message(f"渐进调整: X={move_x:.2f}, Y={move_y:.2f}")
-        vehicle.position_control(move_y, move_x, 0)  # 注意参数顺序可能需要调整
-        
+        # vehicle.position_control(move_y, move_x, 0)  # 注意参数顺序可能需要调整
+        move_and_wait_for_completion(vehicle=vehicle, x=move_y, y=move_x, angle=0, timeout=5)
         # 添加稳定等待时间（根据实际运动速度调整）
-        time.sleep(1)  # 示例值，需实际测试调整
+        time.sleep(0.2)  # 示例值，需实际测试调整
 
     return False  # 需要继续调整
 
@@ -634,14 +635,19 @@ def main():
     controller.set_vehicle_control(vehicle)
     controller.set_arm_control(arm)
 
-    detector = detect.YOLOv8(backend="openvino")
+    detector = detect.YOLOv8(backend="onnx")
     qr_detector = detect.QrCodeDetector()
+    
+    vehicle.position_control(x=0,y=60,yaw=0)
+    time.sleep(1)
+    vehicle.position_control(x=0,y=-60,yaw=0)
+    time.sleep(1)
     # 增加连续位置调整的测试功能
     log_message("开始连续位置调整测试...")
     
     try:
         # 确保摄像头已打开
-        if not cam_down or not cam_down.is_open():
+        if not cam_down :
             log_message("底部摄像头未打开，无法执行位置调整", level="error")
         else:
             # 设置调整参数
@@ -649,44 +655,50 @@ def main():
             adjustment_running = True
             
             log_message("开始连续位置调整，按ESC键停止...")
-            
+
+            camera.start_camera_thread(cam_down)
             while adjustment_running:
-                # 读取当前帧
-                frame = cam_down.read_frame()
+                # Read current frame
+                frame = camera.get_latest_frame()
                 if frame is None:
                     log_message("无法读取图像帧", level="warning")
+                    time.sleep(0.1)  # Add small delay to avoid tight loop
                     continue
                 
-                # 执行目标检测
-                detections = detector.detect(frame)
-                
-                # 显示检测结果
-                detect_img = detector.draw_detections(frame.copy(), detections)
-                cv2.imshow("Continuous Position Adjustment", detect_img)
-                
-                # 执行位置调整
-                adjust_position_to_target(
-                    target_class_id=target_class_id,
-                    detections=detections,
-                    pixel_distance_ratio=PIXEL_DISTANCE_RATIO_HEIGHT_0,
-                    vehicle=vehicle
-                )
-                
-                # 检查是否按下ESC键退出
-                key = cv2.waitKey(10)
-                if key == 27:  # ESC键
-                    log_message("用户中断位置调整")
+                try:
+                    # Perform object detection
+                    detections = detector.detect(frame)
+                    
+                    # Show detection results - use copy() to avoid modifying original frame
+                    detect_img = detector.visualize_detections(frame.copy(), detections)
+                    cv2.imshow("Continuous Position Adjustment", detect_img)
+                    
+                    # Perform position adjustment
+                    adjust_position_to_target(
+                        target_class_id=target_class_id,
+                        detections=detections,
+                        pixel_distance_ratio=PIXEL_DISTANCE_RATIO_HEIGHT_0,
+                        vehicle=vehicle
+                    )
+                    
+                    # Check for ESC key to exit - increase wait time for smoother UI
+                    key = cv2.waitKey(20)
+                    if key == 27:  # ESC key
+                        log_message("用户中断位置调整")
+                        camera.stop_camera_thread(cam_down)
+                        adjustment_running = False
+                except cv2.error as e:
+                    log_message(f"显示异常: {e}", level="error")
                     adjustment_running = False
-            
             cv2.destroyAllWindows()
             
     except Exception as e:
         log_message(f"连续位置调整异常: {e}", level="error")
         cv2.destroyAllWindows()
     
-    context = RobotContext(vehicle, arm, serial_comm, detector,
-                           qr_detector, camera_front=cam_front, camera_down=cam_down)
-    context.run()
+    # context = RobotContext(vehicle, arm, serial_comm, detector,
+    #                        qr_detector, camera_front=cam_front, camera_down=cam_down)
+    # context.run()
 
     return 0
 
