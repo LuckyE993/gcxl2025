@@ -6,12 +6,17 @@ from src.config.settings import get_config
 from src.utils.helpers import log_message
 from src.core.communication import SerialCommunication
 from src.core import control
+from src.core.control import adjust_position_to_target
 from src.core import camera
 from src.core import detect
 import cv2
 import time
 import sys
 from pathlib import Path
+import threading
+import queue
+from threading import Thread, Event
+
 
 # 将项目根目录添加到Python路径
 project_root = Path(__file__).resolve().parents[1]
@@ -20,10 +25,11 @@ sys.path.insert(0, str(project_root))
 
 positionFinish = False
 # 比例控制参数 (0.5~0.8)
-PROPORTIONAL_GAIN = 0.7
+PROPORTIONAL_GAIN = 0.5
 # 最大调整尝试次数
-MAX_ATTEMPTS = 5  
-PIXEL_DISTANCE_RATIO_HEIGHT_0 = 0.5  # 像素到物理距离的比例系数，需要实际校准
+MAX_ATTEMPTS = 5
+PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1 = 0.2848  # 像素到物理距离的比例系数，需要实际校准
+
 
 def initialize_cameras(config):
     """初始化摄像头"""
@@ -100,8 +106,6 @@ def data_received_callback(data):
             "Received position finish signal, positionFinish set to True")
 
 
-
-
 def move_and_wait_for_completion(vehicle, x, y, angle=0, timeout=20):
     """
     发送位置移动命令并等待完成
@@ -128,7 +132,7 @@ def move_and_wait_for_completion(vehicle, x, y, angle=0, timeout=20):
     start_time = time.time()
 
     while not positionFinish:
-        time.sleep(0.1)
+        time.sleep(0.05)
         if time.time() - start_time > timeout:
             log_message("位置调整超时", level="warning")
             return False
@@ -357,146 +361,134 @@ class MoveToRoughProcessingState_Step5(State):
 class AdjustPositionWithRingState_Step6(State):
     def execute(self, context):
         log_message("执行 动作组5 和 识别2: 根据圆环矫正位置")
-        # 解析扫描数据，确定抓取顺序
-        if not context.scanned_data or len(context.scanned_data) < 3:
-            log_message("扫描数据不完整，无法确定抓取顺序", level="error")
-            return
-        # 尝试进行位置调整
-        attempts = 0
-        adjusted = False
+        # # 解析扫描数据，确定抓取顺序
+        # if not context.scanned_data or len(context.scanned_data) < 3:
+        #     log_message("扫描数据不完整，无法确定抓取顺序", level="error")
+        #     return
 
-        while attempts < MAX_ATTEMPTS and not adjusted:
-            log_message(f"位置调整尝试 {attempts + 1}/{MAX_ATTEMPTS}")
-            
-            # 获取当前图像
-            frame = context.camera_down.read_frame()
-            if frame is None:
-                log_message("无法读取图像", level="error")
+        # # 获取当前应该处理的颜色
+        # color_map = {
+        #     '1': {'name': '红色', 'class_id': 0},  # circle_red
+        #     '2': {'name': '绿色', 'class_id': 1},  # circle_green
+        #     '3': {'name': '蓝色', 'class_id': 2},  # circle_blue
+        # }
+
+        # # 获取第一个需要处理的颜色
+        # target_color_code = context.scanned_data[0]
+        # if target_color_code not in color_map:
+        #     log_message(f"未知颜色代码: {target_color_code}", level="warning")
+        #     context.current_state = PlaceAtRoughProcessingState_Step7()
+        #     return
+
+        # color_info = color_map[target_color_code]
+        # log_message(f"准备矫正位置到 {color_info['name']} 圆环")
+
+        # 从配置文件获取像素与实际距离的转换比例
+        config = get_config()
+        pixel_distance_ratio = config.get("vehicle", {}).get(
+            "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1", 0.2848)
+
+        # 创建检测结果队列、停止事件和调整完成事件
+        detection_queue = queue.Queue(maxsize=1)  # 只保留最新的检测结果
+        stop_event = threading.Event()
+        adjustment_complete = threading.Event()
+
+        # 定义位置调整线程函数
+        def adjust_position_thread():
+            log_message("位置调整线程已启动")
+
+            while not stop_event.is_set():
+                try:
+                    # 尝试从队列获取最新的检测结果，等待最多2秒
+                    try:
+                        detections = detection_queue.get(timeout=2.0)
+
+                        # 调整位置
+                        position_adjusted = adjust_position_to_target(
+                            target_class_id=None, # 指定目标 color_info['class_id']
+                            detections=detections,
+                            pixel_distance_ratio=pixel_distance_ratio,
+                            vehicle=context.vehicle,
+                            frame_size=(640, 480),
+                            config=config
+                        )
+
+                        if position_adjusted:
+                            # log_message(f"已成功调整位置到 {color_info['name']} 圆环")
+                            log_message("已成功调整位置到目标位置")
+                            adjustment_complete.set()
+                            break
+
+                    except queue.Empty:
+                        # 队列为空，继续等待
+                        continue
+
+                except Exception as e:
+                    log_message(f"位置调整线程异常: {e}", level="error")
+                    time.sleep(0.5)
+
+            log_message("位置调整线程已结束")
+
+        # 创建并启动位置调整线程
+        adjustment_thread = threading.Thread(target=adjust_position_thread)
+        adjustment_thread.daemon = True
+        adjustment_thread.start()
+
+        # 主线程进行检测
+        max_detection_time = 30  # 最大检测时间(秒)
+        start_time = time.time()
+
+        log_message("开始检测圆环...")
+        while not adjustment_complete.is_set() and (time.time() - start_time) < max_detection_time:
+            try:
+                # 获取一帧图像
+                frame = context.camera_down.read_frame()
+                if frame is None:
+                    log_message("无法读取图像帧", level="warning")
+                    time.sleep(0.1)
+                    continue
+
+                # 执行物体检测
+                detections = context.detector.detect(frame)
+
+                # 更新队列中的检测结果(丢弃旧的)
+                try:
+                    # 如果队列已满，先清空
+                    if detection_queue.full():
+                        detection_queue.get_nowait()
+                    detection_queue.put_nowait(detections)
+                except queue.Full:
+                    pass  # 极少情况下会发生，可以忽略
+
+                # 显示检测结果（可选）
+                detect_img = context.detector.visualize_detections(
+                    frame.copy(), detections)
+                cv2.imshow("Ring Detection", detect_img)
+                cv2.waitKey(1)
+
+                time.sleep(0.03)  # 控制检测频率
+
+            except Exception as e:
+                log_message(f"检测异常: {e}", level="error")
                 time.sleep(0.5)
-                attempts += 1
-                continue
-                
-            # 执行目标检测
-            detections = context.detector.detect(frame)
-            
-            # 显示检测结果（调试用）
-            detect_img = context.detector.draw_detections(frame.copy(), detections)
-            cv2.imshow("Position Adjustment", detect_img)
-            cv2.waitKey(1)
-            
-            # 根据检测结果调整位置
-            adjusted = adjust_position_to_target(
-                detections, 
-                PIXEL_DISTANCE_RATIO_HEIGHT_0,
-                vehicle=context.vehicle
-            )
-            
-            if adjusted:
-                log_message("位置调整成功")
-                time.sleep(1.0)  # 稳定等待
-                break
-                
-            attempts += 1
-            time.sleep(0.5)  # 短暂等待后重试
 
-        if not adjusted:
-            log_message("无法完成位置调整，继续执行后续步骤", level="warning")
-
+        # 关闭显示窗口
         cv2.destroyAllWindows()
+
+        # 停止调整线程
+        stop_event.set()
+        adjustment_thread.join(timeout=1.0)  # 等待线程结束，最多等待1秒
+
+        if adjustment_complete.is_set():
+            log_message("位置已成功调整到目标位置", level="info")
+        else:
+            log_message("位置调整超时，继续执行下一步", level="warning")
+
+        # 等待车辆稳定
+        time.sleep(0.2)
+
+        # 切换到下一个状态
         context.current_state = PlaceAtRoughProcessingState_Step7()
-
-
-def adjust_position_to_target(target_class_id=None, detections=None, pixel_distance_ratio=1.0, vehicle=None, 
-                              frame_size=(640, 480), target_position=None):
-    """
-    改进版：增加比例控制、迭代调整和容错机制
-    支持指定目标点位或默认使用画面中心点
-    支持不指定目标类别时自动选择离目标点最近的检测物体
-    
-    Args:
-        target_class_id: 目标物体的类别ID，不指定则选择最靠近目标点的物体
-        detections: 检测到的物体列表
-        pixel_distance_ratio: 像素距离到实际距离的转换比例
-        vehicle: 车辆控制对象
-        frame_size: 画面尺寸，默认(640, 480)
-        target_position: 可选的目标位置(x, y)，不指定则使用画面中心
-        
-    Returns:
-        bool: 调整完成返回True，否则返回False
-    """
-    # 检查是否有检测结果
-    if not detections:
-        log_message("没有检测到任何物体")
-        return False
-    
-    # 设置目标位置（指定位置或画面中心）
-    if target_position is None:
-        # 画面中心点
-        target_x = frame_size[0] // 2
-        target_y = frame_size[1] // 2
-    else:
-        target_x, target_y = target_position
-    
-    tolerance = 5  # 像素误差容忍范围
-
-    # 如果没有指定目标类别ID，选择离目标点最近的物体
-    if target_class_id is None:
-        min_distance = float('inf')
-        target = None
-        
-        for detection in detections:
-            x, y, w, h = detection['box']
-            center_x = x + w//2
-            center_y = y + h//2
-            
-            # 计算到目标点的距离
-            distance = ((center_x - target_x) ** 2 + (center_y - target_y) ** 2) ** 0.5
-            
-            if distance < min_distance:
-                min_distance = distance
-                target = detection
-                
-        if not target:
-            log_message("未找到合适的目标物体")
-            return False
-            
-        log_message(f"自动选择了离目标点最近的物体 (类别ID: {target['class_id']})")
-    else:
-        # 按指定类别ID寻找目标物体
-        target = next((d for d in detections if d['class_id'] == target_class_id), None)
-        if not target:
-            log_message(f"目标 {target_class_id} 未检测到")
-            return False
-
-    # 计算目标中心
-    x, y, w, h = target['box']
-    target_center = (x + w//2, y + h//2)
-    delta_x = target_center[0] - target_x
-    delta_y = target_center[1] - target_y
-
-    # 检查是否满足条件
-    if abs(delta_x) <= tolerance and abs(delta_y) <= tolerance:
-        log_message("目标已到达指定位置")
-        return True
-
-    # 渐进式调整逻辑
-    if vehicle:
-        # 计算带比例系数的物理偏移量
-        real_x = delta_x * pixel_distance_ratio * PROPORTIONAL_GAIN
-        real_y = delta_y * pixel_distance_ratio * PROPORTIONAL_GAIN
-
-        # 运动方向映射（根据实际坐标系调整）
-        move_x = -real_x  # 前后移动量（假设y轴对应深度方向）
-        move_y = -real_y  # 左右移动量
-
-        # 执行渐进式移动
-        log_message(f"渐进调整: X={move_x:.2f}, Y={move_y:.2f}")
-        # vehicle.position_control(move_y, move_x, 0)  # 注意参数顺序可能需要调整
-        move_and_wait_for_completion(vehicle=vehicle, x=move_y, y=move_x, angle=0, timeout=5)
-        # 添加稳定等待时间（根据实际运动速度调整）
-        time.sleep(0.2)  # 示例值，需实际测试调整
-
-    return False  # 需要继续调整
 
 
 class PlaceAtRoughProcessingState_Step7(State):
@@ -598,7 +590,7 @@ class RobotContext:
         self.communication = communication
         self.detector = detector
         self.qr_detector = qr_detector
-        self.current_state = GrabAtRawMaterialState_Step4()
+        self.current_state = AdjustPositionWithRingState_Step6()
         self.plate_angle = 14
         self.scanned_data = []
 
@@ -637,68 +629,10 @@ def main():
 
     detector = detect.YOLOv8(backend="onnx")
     qr_detector = detect.QrCodeDetector()
-    
-    vehicle.position_control(x=0,y=60,yaw=0)
-    time.sleep(1)
-    vehicle.position_control(x=0,y=-60,yaw=0)
-    time.sleep(1)
-    # 增加连续位置调整的测试功能
-    log_message("开始连续位置调整测试...")
-    
-    try:
-        # 确保摄像头已打开
-        if not cam_down :
-            log_message("底部摄像头未打开，无法执行位置调整", level="error")
-        else:
-            # 设置调整参数
-            target_class_id = None  # 不指定类别ID，选择最近的目标
-            adjustment_running = True
-            
-            log_message("开始连续位置调整，按ESC键停止...")
 
-            camera.start_camera_thread(cam_down)
-            while adjustment_running:
-                # Read current frame
-                frame = camera.get_latest_frame()
-                if frame is None:
-                    log_message("无法读取图像帧", level="warning")
-                    time.sleep(0.1)  # Add small delay to avoid tight loop
-                    continue
-                
-                try:
-                    # Perform object detection
-                    detections = detector.detect(frame)
-                    
-                    # Show detection results - use copy() to avoid modifying original frame
-                    detect_img = detector.visualize_detections(frame.copy(), detections)
-                    cv2.imshow("Continuous Position Adjustment", detect_img)
-                    
-                    # Perform position adjustment
-                    adjust_position_to_target(
-                        target_class_id=target_class_id,
-                        detections=detections,
-                        pixel_distance_ratio=PIXEL_DISTANCE_RATIO_HEIGHT_0,
-                        vehicle=vehicle
-                    )
-                    
-                    # Check for ESC key to exit - increase wait time for smoother UI
-                    key = cv2.waitKey(20)
-                    if key == 27:  # ESC key
-                        log_message("用户中断位置调整")
-                        camera.stop_camera_thread(cam_down)
-                        adjustment_running = False
-                except cv2.error as e:
-                    log_message(f"显示异常: {e}", level="error")
-                    adjustment_running = False
-            cv2.destroyAllWindows()
-            
-    except Exception as e:
-        log_message(f"连续位置调整异常: {e}", level="error")
-        cv2.destroyAllWindows()
-    
-    # context = RobotContext(vehicle, arm, serial_comm, detector,
-    #                        qr_detector, camera_front=cam_front, camera_down=cam_down)
-    # context.run()
+    context = RobotContext(vehicle, arm, serial_comm, detector,
+                           qr_detector, camera_front=cam_front, camera_down=cam_down)
+    context.run()
 
     return 0
 

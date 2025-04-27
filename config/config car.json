@@ -1,7 +1,7 @@
 {
     "model": {
         "path": "models/0423-160/weights/best.onnx",
-        "openvino-int8": "models/0414-model2/train/weights/best_int8_openvino_model",
+        "openvino-int8": "models/0423-160/weights/best_int8_openvino_model",
         "classes": {
             "0": "circle_blue",
             "1": "circle_green",
@@ -18,21 +18,25 @@
         }
     },
     "camera": {
-        "camera_id_front": 10,
-        "camera_id_down": 12,
+        "camera_id_front": 2,
+        "camera_id_down": 0,
         "resolution": {
             "width": 640,
             "height": 480
         }
     },
     "communication": {
-        "com": "/dev/ttyS4",
+        "com": "/dev/ttyUSB0",
         "baudrate": 115200,
         "timeout": 1
     },
     "vehicle": {
         "max_speed": 3000,
-        "max_yaw_rate": 3000
+        "max_yaw_rate": 3000,
+        "PROPORTIONAL_GAIN": 0.5,
+        "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1":0.2848,
+        "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_0":0.4114,
+        "ADJUSTMENT_TOLERANCE": 6
     },
     "arm": {
         "max_height": 425,

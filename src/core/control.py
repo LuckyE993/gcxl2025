@@ -5,6 +5,152 @@ from src.config import settings
 import pygame
 import os
 import sys
+import time
+import queue
+from src.utils.helpers import log_message
+
+
+def adjust_position_to_target(target_class_id=None, detections=None, pixel_distance_ratio=0.2, vehicle=None,
+                              frame_size=(640, 480), target_position=None, config=None):
+    """
+    改进版：增加比例控制、迭代调整和容错机制
+    支持指定目标点位或默认使用画面中心点
+    支持不指定目标类别时自动选择离目标点最近的检测物体
+
+    Args:
+        target_class_id: 目标物体的类别ID，不指定则选择最靠近目标点的物体
+        detections: 检测到的物体列表
+        pixel_distance_ratio: 像素距离到实际距离的转换比例
+        vehicle: 车辆控制对象
+        frame_size: 画面尺寸，默认(640, 480)
+        target_position: 可选的目标位置(x, y)，不指定则使用画面中心
+        config: 配置对象
+
+    Returns:
+        bool: 调整完成返回True，否则返回False
+    """
+    # 从配置文件获取比例控制参数
+    proportional_gain = 0.5
+    if config and "vehicle" in config:
+        proportional_gain = config.get(
+            "vehicle", {}).get("PROPORTIONAL_GAIN", 0.5)
+
+    # 从配置获取容差值
+    tolerance = 5  # 像素误差容忍范围
+    if config and "vehicle" in config:
+        tolerance = config.get("vehicle", {}).get("ADJUSTMENT_TOLERANCE", 5)
+
+    # 检查是否有检测结果
+    if not detections:
+        log_message("没有检测到任何物体")
+        return False
+
+    # 设置目标位置（指定位置或画面中心）
+    if target_position is None:
+        # 画面中心点
+        target_x = frame_size[0] // 2
+        target_y = frame_size[1] // 2
+    else:
+        target_x, target_y = target_position
+
+    # 如果没有指定目标类别ID，选择离目标点最近的物体
+    if target_class_id is None:
+        min_distance = float('inf')
+        target = None
+
+        for detection in detections:
+            x, y, w, h = detection['box']
+            center_x = x + w//2
+            center_y = y + h//2
+
+            # 计算到目标点的距离
+            distance = ((center_x - target_x) ** 2 +
+                        (center_y - target_y) ** 2) ** 0.5
+
+            if distance < min_distance:
+                min_distance = distance
+                target = detection
+
+        if not target:
+            return False
+    else:
+        # 按指定类别ID寻找目标物体
+        target = next(
+            (d for d in detections if d['class_id'] == target_class_id), None)
+        if not target:
+            log_message(f"目标 {target_class_id} 未检测到")
+            return False
+
+    # 计算目标中心
+    x, y, w, h = target['box']
+    target_center = (x + w//2, y + h//2)
+    delta_x = target_center[0] - target_x
+    delta_y = target_center[1] - target_y
+
+    # 检查是否满足条件
+    if abs(delta_x) <= tolerance and abs(delta_y) <= tolerance:
+        return True
+
+    # 渐进式调整逻辑
+    if vehicle:
+        # 计算带比例系数的物理偏移量
+        real_x = delta_x * pixel_distance_ratio * proportional_gain
+        real_y = delta_y * pixel_distance_ratio * proportional_gain
+
+        # 运动方向映射（根据实际坐标系调整）
+        move_x = -real_x  # 前后移动量（假设y轴对应深度方向）
+        move_y = -real_y  # 左右移动量
+
+        # 执行渐进式移动
+        log_message(f"渐进调整: X={move_x:.2f}, Y={move_y:.2f}")
+        
+        vehicle.position_control(move_y, move_x, 0)  # 注意参数顺序可能需要调整
+        time.sleep(0.05)  # 等待一小段时间以允许车辆移动 稳定移动 这个值需要调高
+
+    return False  # 需要继续调整
+
+
+def position_adjustment_thread(stop_event, detection_queue, vehicle, config=None):
+    """
+    位置调整线程函数
+
+    Args:
+        stop_event: 停止事件，用于结束线程
+        detection_queue: 检测结果队列
+        vehicle: 车辆控制对象
+        config: 配置对象
+    """
+    log_message("位置调整线程已启动")
+
+    # 从配置文件获取像素与实际距离的转换比例
+    pixel_distance_ratio = 0.2848  # 默认值
+    if config and "position_adjustment" in config:
+        pixel_distance_ratio = config.get("position_adjustment", {}).get(
+            "pixel_distance_ratio", 0.2848)
+
+    while not stop_event.is_set():
+        try:
+            # 尝试从队列获取最新的检测结果，不阻塞
+            try:
+                detections = detection_queue.get(block=False)
+                # 执行位置调整
+                adjust_position_to_target(
+                    target_class_id=None,
+                    detections=detections,
+                    pixel_distance_ratio=pixel_distance_ratio,
+                    vehicle=vehicle,
+                    config=config
+                )
+            except queue.Empty:
+                # 队列为空，等待一小段时间
+                time.sleep(0.05)
+                continue
+
+        except Exception as e:
+            log_message(f"位置调整线程异常: {e}", level="error")
+            time.sleep(0.5)  # 出错时增加延迟，避免快速循环
+
+    log_message("位置调整线程已结束")
 
 
 class VehicleControl:
@@ -214,13 +360,14 @@ class ArmControl:
         if self.arm_rotate == 1:  # 朝后
             max_allowed_height = min(self.max_height, self.rotate_max_height)
             if height > self.rotate_max_height:
-                log_message(f"朝后方向高度受限: 请求高度 {height}mm 超过后向限制 {self.rotate_max_height}mm", level="warning")
+                log_message(
+                    f"朝后方向高度受限: 请求高度 {height}mm 超过后向限制 {self.rotate_max_height}mm", level="warning")
         else:  # 朝前
             max_allowed_height = self.max_height
 
         # 限制高度范围
         height_val = max(0, min(int(height), max_allowed_height))
-        
+
         log_message(f"Arm height control: height={height_val}mm")
 
         try:
@@ -429,7 +576,7 @@ class ArmControl:
             return False
 
 
-def grabAtRawArea(context,color):
+def grabAtRawArea(context, color):
     """
     原料区抓取函数
 
@@ -446,7 +593,7 @@ def grabAtRawArea(context,color):
     # 机械臂抬起
     context.arm.arm_height_control(75)
     time.sleep(1.5)
-    #机械臂旋转
+    # 机械臂旋转
     context.arm.arm_rotate_control(1)
     time.sleep(1)
     # 夹爪打开
@@ -459,105 +606,11 @@ def grabAtRawArea(context,color):
     context.arm.arm_rotate_control(0)
     time.sleep(0.8)
     # 转盘旋转
-    context.plate_angle+=120
+    context.plate_angle += 120
     context.arm.arm_plate_control(context.plate_angle)
-    
+
     log_message(f"{color} 物料抓取完成")
-    
-def adjust_position_to_target(target_class_id, detections, pixel_distance_ratio, vehicle=None, frame_size=(640, 480)):
-    """
-    根据检测结果调整位置，使目标对象位于画面中心位置（差距在±5像素以内）
 
-    Args:
-        target_class_id (int): 目标物体的类别ID
-        detections (List[Dict]): 检测结果列表
-        pixel_distance_ratio (float): 像素距离到实际距离的比例系数
-        vehicle (VehicleControl, optional): 用于控制车辆移动的对象
-        frame_size (Tuple[int, int]): 画面尺寸 (宽, 高)
-
-    Returns:
-        bool: 如果目标已经位于中心（±5像素内）返回True，否则返回False
-    """
-    # 画面中心点
-    center_x = frame_size[0] // 2
-    center_y = frame_size[1] // 2
-
-    # 像素误差容忍范围
-    tolerance = 5
-
-    # 寻找目标类别的物体
-    target_found = False
-    target_center_x = 0
-    target_center_y = 0
-
-    for detection in detections:
-        if detection['class_id'] == target_class_id:
-            # 获取边界框
-            box = detection['box']
-            x, y, w, h = box
-
-            # 计算物体中心点
-            target_center_x = x + w // 2
-            target_center_y = y + h // 2
-            target_found = True
-
-            # 记录最高置信度的目标（如果有多个相同类别）
-            break
-
-    if not target_found:
-        log_message(f"未找到目标类别 {target_class_id} 的物体")
-        return False
-
-    # 计算目标中心与画面中心的偏移量
-    delta_x = target_center_x - center_x
-    delta_y = target_center_y - center_y
-
-    log_message(
-        f"目标位置: ({target_center_x}, {target_center_y}), 中心位置: ({center_x}, {center_y})")
-    log_message(f"偏移量: x={delta_x}px, y={delta_y}px")
-
-    # 检查是否已经在容忍范围内
-    if abs(delta_x) <= tolerance and abs(delta_y) <= tolerance:
-        log_message("目标已经位于中心位置（±5像素范围内）")
-        return True
-
-    # 如果传入了车辆控制对象，计算实际距离并进行微调
-    if vehicle is not None:
-        # 将像素偏移转换为物理单位
-        real_x_offset = delta_x * pixel_distance_ratio
-        real_y_offset = delta_y * pixel_distance_ratio
-
-        # 注意：根据实际坐标系统调整正负号
-        # 假设: 画面 x+ 向右, y+ 向下, 车辆 x+ 向前, y+ 向左
-        move_x = -real_y_offset  # 垂直方向可能需要换成前进/后退
-        move_y = -real_x_offset  # 水平方向可能需要换成左/右移动
-
-        log_message(f"调整位置: x={move_x:.2f}, y={move_y:.2f}")
-
-        # 重置位置完成标志
-        global positionFinish
-        positionFinish = False
-
-        # 发送位置调整命令
-        vehicle.position_control(move_x, move_y, 0)  # 第三个参数是旋转角度，保持为0
-
-        # 等待位置调整完成
-        log_message("等待位置调整完成...")
-        timeout = 20  # 设置超时时间（秒）
-        start_time = time.time()
-
-        while not positionFinish:
-            time.sleep(0.1)
-            if time.time() - start_time > timeout:
-                log_message("位置调整超时", level="warning")
-                break
-
-        if positionFinish:
-            log_message("位置调整完成")
-            # 位置调整完成后，重新检测目标位置
-            return False  # 返回False以便在下一轮循环中重新检测位置
-
-    return False
 
 class PyGameController:
     def __init__(self, vehicle_control=None, arm_control=None):
@@ -592,18 +645,18 @@ class PyGameController:
 
         # 初始化可用的手柄
         self._init_joysticks()
-        
+
     def _setup_platform_mappings(self):
         """根据配置文件设置控制器映射关系"""
         from src.config import settings
-        
+
         # 获取配置
         config = settings.get_config()
         controller_config = config.get("controller", {})
-        
+
         # 获取平台名称，默认为系统平台名称
         platform = controller_config.get("platform", None)
-        
+
         # 如果配置中没有指定平台，则根据系统自动判断
         if not platform:
             import sys
@@ -611,12 +664,12 @@ class PyGameController:
                 platform = "win"
             else:
                 platform = "ubuntu"  # 默认使用Ubuntu映射
-        
+
         # 获取对应平台的映射配置
         platform_config = controller_config.get(platform, {})
-        
+
         log_message(f"使用'{platform}'平台的控制器映射配置")
-        
+
         # 设置轴映射
         self.axis_map = {
             "lx": platform_config.get("left_stick_x", 1),
@@ -625,7 +678,7 @@ class PyGameController:
             "lt": platform_config.get("left_trigger", 2 if platform != "win" else 4),
             "rt": platform_config.get("right_trigger", 5)
         }
-        
+
         # 设置按钮映射
         self.button_map = {
             "forward": platform_config.get("left_bumper", 4 if platform != "win" else 9),
@@ -635,7 +688,7 @@ class PyGameController:
             "mode": platform_config.get("y_button", 3 if platform == "ubuntu" else 2),
             "mode_back": platform_config.get("b_button", 1)
         }
-        
+
         log_message(f"控制器轴映射: {self.axis_map}")
         log_message(f"控制器按钮映射: {self.button_map}")
 
@@ -724,8 +777,9 @@ class PyGameController:
                 # 检测模式切换按钮
                 if not self.arm:
                     return
-    
-                mode_button_pressed = self.active_joystick.get_button(self.button_map["mode"])
+
+                mode_button_pressed = self.active_joystick.get_button(
+                    self.button_map["mode"])
                 if mode_button_pressed and not button_states.get("mode_button", False) and not self.arm_control_mode:
                     if self.arm:
                         self.arm_control_mode = True
@@ -735,7 +789,8 @@ class PyGameController:
                 button_states["mode_button"] = mode_button_pressed
 
                 # mode_back_button - 退出机械臂控制模式
-                mode_back_button_pressed = self.active_joystick.get_button(self.button_map["mode_back"])
+                mode_back_button_pressed = self.active_joystick.get_button(
+                    self.button_map["mode_back"])
                 if mode_back_button_pressed and not button_states.get("mode_back_button", False) and self.arm_control_mode:
                     self.arm_control_mode = False
                     log_message("已切换回底盘控制模式")
@@ -758,27 +813,30 @@ class PyGameController:
         """处理底盘控制逻辑"""
         if not self.vehicle:
             return
-        # 底盘设置xy与手柄相反    
+        # 底盘设置xy与手柄相反
         steer_dir_y = self.active_joystick.get_axis(self.axis_map["lx"])*-1
         steer_dir_x = self.active_joystick.get_axis(self.axis_map["ly"])*-1
-        steer_rotation_x = self.active_joystick.get_axis(self.axis_map["rx"])*-1
+        steer_rotation_x = self.active_joystick.get_axis(
+            self.axis_map["rx"])*-1
         left_trigger = self.active_joystick.get_axis(self.axis_map["lt"])
         right_trigger = self.active_joystick.get_axis(self.axis_map["rt"])
-    
+
         # 应用死区
         steer_dir_x = 0 if abs(steer_dir_x) < self.deadzone else steer_dir_x
         steer_dir_y = 0 if abs(steer_dir_y) < self.deadzone else steer_dir_y
-        steer_rotation_x = 0 if abs(steer_rotation_x) < self.deadzone else steer_rotation_x
-    
+        steer_rotation_x = 0 if abs(
+            steer_rotation_x) < self.deadzone else steer_rotation_x
+
         # 计算运动控制值
         # 将扳机值从[-1,1]映射到[0,1]
         left_power = ((left_trigger + 1) / 2) * -1
         right_power = (right_trigger + 1) / 2
-    
+
         vx = steer_dir_x * (left_power+right_power) * self.max_speed  # 前进速度
         vy = steer_dir_y * (left_power+right_power) * self.max_speed  # 侧向速度
-        vyaw = steer_rotation_x * (left_power+right_power) * self.max_rotation  # 旋转速度
-    
+        vyaw = steer_rotation_x * \
+            (left_power+right_power) * self.max_rotation  # 旋转速度
+
         # 发送控制命令
         self.vehicle.velocity_control(int(vx), int(vy), int(vyaw))
 
@@ -792,8 +850,10 @@ class PyGameController:
             return
 
         # 左右扳机控制机械臂高度
-        left_trigger = self.active_joystick.get_axis(self.axis_map["lt"])  # 范围从-1到1
-        right_trigger = self.active_joystick.get_axis(self.axis_map["rt"])  # 范围从-1到1
+        left_trigger = self.active_joystick.get_axis(
+            self.axis_map["lt"])  # 范围从-1到1
+        right_trigger = self.active_joystick.get_axis(
+            self.axis_map["rt"])  # 范围从-1到1
 
         # 将扳机值从[-1,1]映射到[0,1]
         left_power = (left_trigger + 1) / 2
@@ -802,20 +862,23 @@ class PyGameController:
         # 只有当扳机值大于0.2才触发高度变化，防止误触
         if left_power > 0.2:
             # 左扳机下降
-            new_height = max(0, self.arm.arm_height - self.arm_height_increment)
+            new_height = max(0, self.arm.arm_height -
+                             self.arm_height_increment)
             if new_height != self.arm.arm_height:
                 log_message(f"机械臂高度下降: {self.arm.arm_height} -> {new_height}")
                 self.arm.arm_height_control(new_height)
 
         if right_power > 0.2:
             # 右扳机上升
-            new_height = min(self.arm.max_height, self.arm.arm_height + self.arm_height_increment)
+            new_height = min(self.arm.max_height,
+                             self.arm.arm_height + self.arm_height_increment)
             if new_height != self.arm.arm_height:
                 log_message(f"机械臂高度上升: {self.arm.arm_height} -> {new_height}")
                 self.arm.arm_height_control(new_height)
 
         # 控制旋转盘旋转120°
-        plate_rotate_pressed = self.active_joystick.get_button(self.button_map["plate"])
+        plate_rotate_pressed = self.active_joystick.get_button(
+            self.button_map["plate"])
         if plate_rotate_pressed and not button_states.get("plate_rotate", False):
             # 计算新的角度值（当前角度加上120°，并取模确保在0-359范围内）
             new_angle = (self.arm.arm_plate_angle + 120) % 360
@@ -824,8 +887,10 @@ class PyGameController:
         button_states["plate_rotate"] = plate_rotate_pressed
 
         # 控制机械臂旋转方向
-        forward_pressed = self.active_joystick.get_button(self.button_map["forward"])
-        backward_pressed = self.active_joystick.get_button(self.button_map["backward"])
+        forward_pressed = self.active_joystick.get_button(
+            self.button_map["forward"])
+        backward_pressed = self.active_joystick.get_button(
+            self.button_map["backward"])
 
         # 确保按钮状态有记录，防止第一次触发错误
         if "forward" not in button_states:
