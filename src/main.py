@@ -166,19 +166,20 @@ class ActionGroup1State(State):
         log_message("执行 动作组1: 出库移动")
         time.sleep(0.5)
         # 使用函数进行移动并等待完成
-        if move_and_wait_for_completion(vehicle=context.vehicle, x=-230, y=175, angle=0, timeout=15):
+        if move_and_wait_for_completion(vehicle=context.vehicle, x=-150, y=150, angle=0, timeout=15):
             log_message("出库完成，开始扫码")
 
         else:
             log_message("出库执行失败", level="error")
 
-        context.current_state = GrabAtRawMaterialState_Step4()
+        context.current_state = ScanState()
+        # context.current_state = None
 
 
 class ScanState(State):
     def execute(self, context):
         move_and_wait_for_completion(
-            vehicle=context.vehicle, x=500, y=0, angle=0, timeout=15)
+            vehicle=context.vehicle, x=0, y=450, angle=0, timeout=15)
 
         mission = context.qr_detector.detect_from_camera(
             context.camera_front, display=False)
@@ -629,10 +630,10 @@ def main():
 
     detector = detect.YOLOv8(backend="onnx")
     qr_detector = detect.QrCodeDetector()
-
-    context = RobotContext(vehicle, arm, serial_comm, detector,
-                           qr_detector, camera_front=cam_front, camera_down=cam_down)
-    context.run()
+    
+    # context = RobotContext(vehicle, arm, serial_comm, detector,
+    #                        qr_detector, camera_front=cam_front, camera_down=cam_down)
+    # context.run()
 
     return 0
 

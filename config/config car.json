@@ -31,8 +31,8 @@
         "timeout": 1
     },
     "vehicle": {
-        "max_speed": 3000,
-        "max_yaw_rate": 3000,
+        "max_speed": 5000,
+        "max_yaw_rate": 5000,
         "PROPORTIONAL_GAIN": 0.5,
         "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1":0.2848,
         "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_0":0.4114,
@@ -43,12 +43,12 @@
         "rotate_max_height": 250
     },
     "controller": {
-        "platform": "debian10",
+        "platform": "ubuntu",
         "ubuntu": {
             "left_trigger":2,
             "right_trigger": 5,
-            "left_stick_x": 1,
-            "left_stick_y": 0,
+            "left_stick_x": 0,
+            "left_stick_y": 1,
             "right_stick_x": 3,
             "right_stick_y": 4,
             "left_bumper": 4,
