@@ -77,16 +77,16 @@ uint8_t senddata2cam[10] = {
     UART_TAIL   // 尾帧
 };
 uint8_t positionConfirm[10] = {
-    UART_HEAD,  // 头帧
-    0x00,       // 命令类型，默认0x01
-    0x01, 
-    0x00, 
-    0x00, 
-    0x00, 
-    0x00,       
-    0x00,       
-    0x00,       
-    UART_TAIL   // 尾帧
+    UART_HEAD, // 头帧
+    0x00,      // 命令类型，默认0x01
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    UART_TAIL // 尾帧
 };
 /**
  * @brief 设置底盘速度
@@ -153,11 +153,11 @@ void move_set_interrupt(float x, float y, float yaw_t, float acc)
     // Set target position (relative to current)
     move_control.target_x = move_control.current_x + x;
     move_control.target_y = move_control.current_y + y;
-   while (yaw_t>360.0f)
+    while (yaw_t > 360.0f)
     {
-        yaw_t-=360.0f;/* code */
+        yaw_t -= 360.0f; /* code */
     }
-    
+
     move_control.target_yaw = yaw_t;
 
     // Set acceleration
@@ -277,10 +277,10 @@ void motor_task(void const *pvParameters)
             out_y = Speed_Limit2(out_y, real_y, chassis_move.y_set);
 
             // 计算四个电机的速度输出（麦克纳姆轮运动学解算）
-            motor_Speed_output[0] = -out_x - out_y - chassis_move.yaw_set; 
-            motor_Speed_output[1] = out_x - out_y - chassis_move.yaw_set; 
-            motor_Speed_output[2] = out_x + out_y - chassis_move.yaw_set;  
-            motor_Speed_output[3] = -out_x + out_y - chassis_move.yaw_set; 
+            motor_Speed_output[0] = -out_x - out_y - chassis_move.yaw_set;
+            motor_Speed_output[1] = out_x - out_y - chassis_move.yaw_set;
+            motor_Speed_output[2] = out_x + out_y - chassis_move.yaw_set;
+            motor_Speed_output[3] = -out_x + out_y - chassis_move.yaw_set;
         }
         else // 仅速度环控制模式
         {
@@ -297,10 +297,10 @@ void motor_task(void const *pvParameters)
                       (motor_chassis[1].angle - chassis_move.yaw_real)) /
                      2.0f;
             // 直接使用目标速度进行麦轮运动学解算
-            motor_Speed_output[0] = -target_vx - target_vy - target_vyaw; 
-            motor_Speed_output[1] = target_vx - target_vy - target_vyaw;  
-            motor_Speed_output[2] = target_vx + target_vy - target_vyaw;  
-            motor_Speed_output[3] = -target_vx + target_vy - target_vyaw; 
+            motor_Speed_output[0] = -target_vx - target_vy - target_vyaw;
+            motor_Speed_output[1] = target_vx - target_vy - target_vyaw;
+            motor_Speed_output[2] = target_vx + target_vy - target_vyaw;
+            motor_Speed_output[3] = -target_vx + target_vy - target_vyaw;
         }
 
         // 速度环PID计算，输出电流值
@@ -373,7 +373,7 @@ void main_task(void const *pvParameters)
     move_tar.x = 0;   // X方向目标位置初始化为0
     move_tar.y = 0;   // Y方向目标位置初始化为0
     move_tar.yaw = 0; // 目标偏航角初始化为0
-    
+
     // move_set(300, 0, 0, 3); // 设置初始运动目标(300mm前进，0mm侧移，0度偏航，1m/s加速度)
     // osDelay(3000);          // 等待3秒钟，确保运动完成
     // move_set_interrupt(-300, 0, 0, 1);
