@@ -24,6 +24,7 @@
             "width": 640,
             "height": 480
         }
+        
     },
     "communication": {
         "com": "/dev/ttyUSB0",
