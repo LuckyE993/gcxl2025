@@ -25,3 +25,14 @@ yolo val model=path/to/best.pt data="D:\YOLO\ultralytics\datasets\0414-2\data.ya
 ``` bash
 yolo val task=detect model="D:\YOLO\ultralytics\runs\detect\train\weights\best.pt" imgsz=320 data=D:\YOLO\ultralytics\datasets\0414-2\data.yaml
 ```
+
+# 测试实验
+- [test_track](tests/test_track.py) 完成物料抓取精度测试 (重复N次)
+```bash
+sudo /home/car/miniconda3/envs/gcxl2025/bin/python -m tests.test_track
+```
+
+- [test_center](tests/test_center.py) 视觉伺服对准精度测试 (目标：物料块中心)
+```bash
+sudo /home/car/miniconda3/envs/gcxl2025/bin/python -m tests.test_center
+``` 

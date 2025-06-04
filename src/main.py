@@ -27,27 +27,38 @@ positionFinish = False
 # 比例控制参数 (0.5~0.8)
 PROPORTIONAL_GAIN = 0.5
 # 最大调整尝试次数
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 10
 PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1 = 0.2848  # 像素到物理距离的比例系数，需要实际校准
 
 
 def initialize_cameras(config):
     """初始化摄像头"""
     log_message("正在初始化摄像头...")
-    cam_front = camera.Camera(config["camera"]["camera_id_front"], (640, 480))
-    cam_down = camera.Camera(config["camera"]["camera_id_down"], (640, 480))
+    
+    # 使用新的配置函数创建摄像头
+    cam_front, cam_down = camera.get_camera_from_config()
 
     try:
-        # Initialize front camera
-        if cam_front.open():
+        # 检查前置摄像头
+        if cam_front is not None:
             log_message(f"cam_front properties: {cam_front.get_properties()}")
         else:
             log_message("无法打开正面摄像头", level="warning")
+            # 备用方案：手动创建前置摄像头
+            cam_front = camera.Camera(config["camera"]["camera_id_front"], (640, 480), apply_correction=False)
+            if not cam_front.open():
+                cam_front = None
 
-        if cam_down.open():
+        # 检查下置摄像头
+        if cam_down is not None:
             log_message(f"cam_down properties: {cam_down.get_properties()}")
+            log_message("下置摄像头已启用广角畸变校正")
         else:
             log_message("无法打开底部摄像头", level="warning")
+            # 备用方案：手动创建下置摄像头
+            cam_down = camera.Camera(config["camera"]["camera_id_down"], (640, 480), apply_correction=True)
+            if not cam_down.open():
+                cam_down = None
 
     except Exception as e:
         log_message(f"摄像头初始化异常: {e}", level="error")
