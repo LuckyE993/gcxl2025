@@ -4,8 +4,8 @@ import time
 from typing import Optional, Tuple, Dict, List, Union, Any
 import sys
 from pathlib import Path
-# Add to the imports at the top of your file
 import threading
+import json
 
 # Define a global variable for the camera reading thread
 camera_thread = None
@@ -23,18 +23,72 @@ from src.config.settings import get_config
 class Camera:
     """摄像头操作的封装类，提供摄像头读取和配置的功能"""
     
-    def __init__(self, camera_id: int = 0, resolution: Tuple[int, int] = (640, 480)):
+    def __init__(self, camera_id: int = 0, resolution: Tuple[int, int] = (640, 480), apply_correction: bool = False):
         """
         初始化摄像头对象
         
         Args:
             camera_id (int): 摄像头ID，默认为0（通常是内置摄像头）
             resolution (Tuple[int, int]): 分辨率，格式为(宽, 高)
+            apply_correction (bool): 是否应用畸变校正
         """
         self.camera_id = camera_id
         self.resolution = resolution
+        self.apply_correction = apply_correction
         self.cap = None
         self.is_open = False
+        
+        # 畸变校正相关参数
+        self.camera_matrix = None
+        self.dist_coeffs = None
+        self.mapx = None
+        self.mapy = None
+        self.correction_ready = False
+        
+        # 如果需要校正，加载校正参数
+        if self.apply_correction:
+            self._load_correction_parameters()
+    
+    def _load_correction_parameters(self):
+        """从配置文件加载畸变校正参数"""
+        try:
+            # 获取配置文件路径
+            config_path = project_root / "config" / "config car.json"
+            
+            if not config_path.exists():
+                log_message(f"配置文件不存在: {config_path}", level="warning")
+                return
+                
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # 获取camera_down_correct中的数据
+            camera_config = config.get("camera", {})
+            correction_data = camera_config.get("camera_down_correct", {})
+            
+            if not correction_data or 'camera_matrix' not in correction_data:
+                log_message("配置文件中未找到有效的畸变校正数据", level="warning")
+                return
+            
+            # 加载校正参数
+            self.camera_matrix = np.array(correction_data['camera_matrix'])
+            self.dist_coeffs = np.array(correction_data['dist_coeffs'])
+            img_size = (correction_data['image_width'], correction_data['image_height'])
+            
+            # 计算最佳新相机矩阵
+            new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+                self.camera_matrix, self.dist_coeffs, img_size, 0, img_size)
+            
+            # 预计算畸变映射
+            self.mapx, self.mapy = cv2.initUndistortRectifyMap(
+                self.camera_matrix, self.dist_coeffs, None, new_camera_matrix, img_size, cv2.CV_32FC1)
+            
+            self.correction_ready = True
+            log_message(f"摄像头ID {self.camera_id} 畸变校正参数加载成功")
+            
+        except Exception as e:
+            log_message(f"加载畸变校正参数失败: {str(e)}", level="error")
+            self.correction_ready = False
     
     def open(self) -> bool:
         """
@@ -54,7 +108,8 @@ class Camera:
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
             
             self.is_open = True
-            log_message(f"成功打开摄像头ID: {self.camera_id}, 分辨率: {self.resolution}")
+            correction_status = "启用畸变校正" if (self.apply_correction and self.correction_ready) else "未启用畸变校正"
+            log_message(f"成功打开摄像头ID: {self.camera_id}, 分辨率: {self.resolution}, {correction_status}")
             return True
         except Exception as e:
             log_message(f"打开摄像头异常: {str(e)}", level="error")
@@ -71,7 +126,7 @@ class Camera:
     
     def read_frame(self) -> Optional[np.ndarray]:
         """
-        读取一帧图像
+        读取一帧图像，如果启用了校正则自动应用畸变校正
         
         Returns:
             Optional[np.ndarray]: 成功返回图像帧(BGR格式)，失败返回None
@@ -84,7 +139,14 @@ class Camera:
         if not ret:
             log_message("读取帧失败", level="warning")
             return None
-            
+        
+        # 如果启用校正且校正参数已准备好，应用畸变校正
+        if self.apply_correction and self.correction_ready and self.mapx is not None and self.mapy is not None:
+            try:
+                frame = cv2.remap(frame, self.mapx, self.mapy, cv2.INTER_LINEAR)
+            except Exception as e:
+                log_message(f"应用畸变校正失败: {str(e)}", level="error")
+        
         return frame
     
     def get_properties(self) -> Dict[str, float]:
@@ -210,27 +272,42 @@ def list_available_cameras() -> List[int]:
     return available_cameras
 
 
-def get_camera_from_config() -> Optional[Camera]:
+def get_camera_from_config() -> Tuple[Optional[Camera], Optional[Camera]]:
     """
-    从配置文件中读取摄像头设置并返回摄像头对象
+    从配置文件中读取摄像头设置并返回前置和下置摄像头对象
     
     Returns:
-        Optional[Camera]: 配置好的摄像头对象，配置失败返回None
+        Tuple[Optional[Camera], Optional[Camera]]: (前置摄像头, 下置摄像头)，配置失败返回None
     """
     try:
         config = get_config()
         camera_config = config.get("camera", {})
-        camera_id = camera_config.get("id", 0)
-        width = camera_config.get("width", 640)
-        height = camera_config.get("height", 480)
         
-        camera = Camera(camera_id=camera_id, resolution=(width, height))
-        if camera.open():
-            return camera
-        return None
+        # 前置摄像头配置
+        camera_id_front = camera_config.get("camera_id_front", 0)
+        camera_id_down = camera_config.get("camera_id_down", 2)
+        
+        resolution_config = camera_config.get("resolution", {})
+        width = resolution_config.get("width", 640)
+        height = resolution_config.get("height", 480)
+        resolution = (width, height)
+        
+        # 创建前置摄像头（不应用校正）
+        camera_front = Camera(camera_id=camera_id_front, resolution=resolution, apply_correction=False)
+        
+        # 创建下置摄像头（应用校正，因为是广角摄像头）
+        camera_down = Camera(camera_id=camera_id_down, resolution=resolution, apply_correction=True)
+        
+        # 尝试打开摄像头
+        front_success = camera_front.open()
+        down_success = camera_down.open()
+        
+        return (camera_front if front_success else None, 
+                camera_down if down_success else None)
+        
     except Exception as e:
         log_message(f"从配置文件读取摄像头设置失败: {str(e)}", level="error")
-        return None
+        return None, None
 
 
 def capture_image(camera: Camera) -> Optional[np.ndarray]:

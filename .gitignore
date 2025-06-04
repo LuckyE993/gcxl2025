@@ -48,3 +48,5 @@ data/output/*
 models/*
 anaconda_projects/*
 notebook/.ipynb_checkpoints/*
+calibration_images/
+correction_comparison/

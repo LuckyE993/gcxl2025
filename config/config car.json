@@ -18,13 +18,45 @@
         }
     },
     "camera": {
-        "camera_id_front": 2,
-        "camera_id_down": 0,
+        "camera_id_front": 0,
+        "camera_id_down": 2,
         "resolution": {
             "width": 640,
             "height": 480
+        },
+        "camera_down_correct": {
+            "camera_matrix": [
+                [
+                    426.30168740757966,
+                    0.0,
+                    311.7402657787054
+                ],
+                [
+                    0.0,
+                    428.51586335861725,
+                    242.28312928407175
+                ],
+                [
+                    0.0,
+                    0.0,
+                    1.0
+                ]
+            ],
+            "dist_coeffs": [
+                [
+                    -0.4036432281429926,
+                    0.20210993219718465,
+                    0.0005928103401335006,
+                    0.00029748761849620876,
+                    -0.05684784683768213
+                ]
+            ],
+            "image_width": 640,
+            "image_height": 480,
+            "height": 0.20883609390452165,
+            "pixel_ratio": 0.48987864714890766,
+            "calibration_time": "2025-05-30 18:06:24"
         }
-        
     },
     "communication": {
         "com": "/dev/ttyUSB0",
@@ -34,10 +66,10 @@
     "vehicle": {
         "max_speed": 5000,
         "max_yaw_rate": 5000,
-        "PROPORTIONAL_GAIN": 0.5,
-        "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1":0.2848,
-        "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_0":0.4114,
-        "ADJUSTMENT_TOLERANCE": 6
+        "PROPORTIONAL_GAIN": 0.6,
+        "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_1": 0.357,
+        "PIXEL_DISTANCE_RATIO_HEIGHT_0_OBJECT_0": 0.5168928648379947,
+        "ADJUSTMENT_TOLERANCE": 5
     },
     "arm": {
         "max_height": 425,
@@ -46,7 +78,7 @@
     "controller": {
         "platform": "ubuntu",
         "ubuntu": {
-            "left_trigger":2,
+            "left_trigger": 2,
             "right_trigger": 5,
             "left_stick_x": 0,
             "left_stick_y": 1,
@@ -73,7 +105,7 @@
             "x_button": 3,
             "y_button": 0
         },
-        "win":{
+        "win": {
             "left_trigger": 4,
             "right_trigger": 5,
             "left_stick_x": 1,
