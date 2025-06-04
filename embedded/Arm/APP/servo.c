@@ -29,8 +29,8 @@ uint8_t MQ[9] = {0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5A};
 int angle_front = 0; // 机械臂朝向角度值
 int angle_back = 167;
 
-int angle_open = 100; // 爪子开合角度值
-int angle_close = 145;
+int angle_open =145; // 爪子开合角度值
+int angle_close = 100;
 int angle_open_max = 80;
 
 float l_1 = 130; // 大臂
